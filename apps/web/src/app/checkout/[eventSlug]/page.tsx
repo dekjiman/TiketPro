@@ -36,7 +36,7 @@ export default function CheckoutPage() {
   const eventSlug = params.eventSlug as string;
   const { isLoggedIn } = useAuthStore();
 
-  const { data: categories, isLoading: categoriesLoading } = useQuery({
+  const { data: categories, isLoading: categoriesLoading, isError: categoriesError, error: categoriesErrorData } = useQuery({
     queryKey: ['ticket-categories', eventSlug],
     queryFn: async () => {
       const res = await api.get(`/api/events/${eventSlug}/ticket-categories`);
@@ -44,7 +44,7 @@ export default function CheckoutPage() {
     },
   });
 
-  const { data: event } = useQuery({
+  const { data: event, isError: eventError, error: eventErrorData } = useQuery({
     queryKey: ['event', eventSlug],
     queryFn: async () => {
       const res = await api.get(`/api/events/${eventSlug}`);
@@ -65,6 +65,22 @@ export default function CheckoutPage() {
     return null;
   }
 
+  if (categoriesError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p>Error loading ticket categories: {categoriesErrorData?.message || 'Unknown error'}</p>
+      </div>
+    );
+  }
+
+  if (eventError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p>Error loading event: {eventErrorData?.message || 'Unknown error'}</p>
+      </div>
+    );
+  }
+
   if (categoriesLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -77,7 +93,7 @@ export default function CheckoutPage() {
     <div className="min-h-screen bg-gray-50">
       <div className="container mx-auto px-4 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
-          <div className="lg:col-span-3">
+          <div className="lg:col-span-3 space-y-6">
             <TicketSelection
               categories={categories || []}
               selectedItems={selectedItems}
