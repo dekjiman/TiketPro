@@ -1,0 +1,758 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+
+  // Use direct connection for migrations (bypasses PgBouncer)
+  directUrl = env("DATABASE_URL")
+}
+
+enum Role {
+  SUPER_ADMIN
+  EO_ADMIN
+  EO_STAFF
+  AFFILIATE
+  RESELLER
+  CUSTOMER
+  GATE_STAFF
+}
+
+enum EventStatus {
+  DRAFT
+  REVIEW
+  PUBLISHED
+  SALE_OPEN
+  SALE_CLOSED
+  ONGOING
+  COMPLETED
+  ARCHIVED
+  CANCELLED
+}
+
+enum LineupRole {
+  HEADLINER
+  SUPPORTING
+  DJ
+  HOST
+  SPECIAL_GUEST
+  OPENING_ACT
+}
+
+enum SessionType {
+  PERFORMANCE
+  BREAK
+  CEREMONY
+  TALKSHOW
+  OTHER
+}
+
+enum CatStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+  SOLD_OUT
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FULFILLED
+  REFUNDED
+  PARTIAL_REFUND
+  EXPIRED
+  CANCELLED
+}
+
+enum TicketStatus {
+  PENDING
+  ACTIVE
+  USED
+  REFUNDED
+  CANCELLED
+  TRANSFERRED
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  emailNormalized String    @unique
+  passwordHash    String?
+  name            String
+  phone           String?
+  city            String?
+  bio             String?
+  avatar          String?
+  role            Role      @default(CUSTOMER)
+  status          String    @default("ACTIVE") // ACTIVE, INACTIVE, SUSPENDED, BANNED, PENDING_APPROVAL
+  isVerified      Boolean   @default(false)
+  referralCode    String    @unique
+  twoFASecret     String?
+  twoFAEnabled    Boolean   @default(false)
+  backupCodes     String[]
+  failedAttempts  Int       @default(0)
+  lockedUntil     DateTime?
+  provider        String    @default("local")
+  providerId      String?
+  inviteToken     String?
+  invitedBy       String?
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sessions       Session[]
+  auditLogs      AuditLog[]
+  eoProfile      EoProfile?
+  orders         Order[]
+  tickets        Ticket[]
+  referrals      ReferralTransaction[] @relation("Referrer")
+  referredBy     ReferralTransaction[] @relation("Referred")
+  rfidCards      RfidCard[]
+  gameProfile    UserGameProfile?
+  lotteryEntries LotteryEntry[]
+  eoInvites      StaffInvite[]         @relation("StaffInviteInviter")
+
+  @@unique([provider, providerId])
+  @@index([emailNormalized])
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  deviceName String?
+  deviceType String?
+  browser    String?
+  os         String?
+  ipAddress  String
+  city       String?
+  isActive   Boolean  @default(true)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  userId         String?
+  actorId        String?
+  event          String
+  level          String   @default("INFO") // INFO, WARN, ERROR
+  ipAddress      String
+  userAgent      String?
+  meta           String?  @db.Text // JSON
+  isImpersonated Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+}
+
+model EoProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  companyName String
+  bankName    String?
+  bankAccount String?
+  commission  Float    @default(0.05)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user    User          @relation(fields: [userId], references: [id])
+  events  Event[]
+  invites StaffInvite[]
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+model StaffInvite {
+  id        String       @id @default(cuid())
+  eoId      String
+  email     String
+  emailHash String       @unique
+  status    InviteStatus @default(PENDING)
+  invitedBy String
+  expiresAt DateTime
+  createdAt DateTime     @default(now())
+
+  eo      EoProfile @relation(fields: [eoId], references: [id])
+  inviter User      @relation("StaffInviteInviter", fields: [invitedBy], references: [id])
+}
+
+model Event {
+  id               String      @id @default(cuid())
+  eoId             String
+  title            String
+  slug             String      @unique
+  shortDescription String?
+  description      String?     @db.Text
+  posterUrl        String?
+  bannerUrl        String?
+  thumbnailUrl     String?
+  startDate        DateTime
+  endDate          DateTime
+  isMultiDay       Boolean     @default(false)
+  city             String
+  province         String?
+  status           EventStatus @default(DRAFT)
+  isFeatured       Boolean     @default(false)
+  adminNote        String?     @db.Text
+  cancelReason     String?     @db.Text
+  publishedAt      DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  eo            EoProfile        @relation(fields: [eoId], references: [id])
+  categories    TicketCategory[]
+  orders        Order[]
+  tickets       Ticket[]
+  lineups       EventLineup[]
+  rundowns      EventRundown[]
+  venues        EventVenue[]
+  rfidCards     RfidCard[]
+  gameMissions  GameMission[]
+  checkInPoints CheckInPoint[]
+  genres        EventGenre[]
+  tags          EventTag[]
+  gates         Gate[]
+  lotteryEvents LotteryEvent[]
+}
+
+model EventVenue {
+  id         String  @id @default(cuid())
+  eventId    String  @unique
+  name       String
+  address    String  @db.Text
+  city       String
+  province   String?
+  capacity   Int
+  latitude   Float?
+  longitude  Float?
+  facilities String? @db.Text
+  mapUrl     String?
+  notes      String? @db.Text
+  timezone   String
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+}
+
+model EventLineup {
+  id          String     @id @default(cuid())
+  eventId     String
+  artistName  String
+  photoUrl    String?
+  description String?    @db.Text
+  role        LineupRole @default(SUPPORTING)
+  orderIndex  Int
+  dayIndex    Int?
+  socialLinks Json?
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+}
+
+model EventRundown {
+  id          String    @id @default(cuid())
+  eventId     String
+  title       String
+  startTime   DateTime
+  endTime     DateTime?
+  stage       String?
+  description String?   @db.Text
+  sessionType String
+  orderIndex  Int
+  dayIndex    Int
+  eventDate   DateTime?
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+}
+
+model TicketCategory {
+  id            String    @id @default(cuid())
+  eventId       String
+  name          String
+  description   String?   @db.Text
+  price         Int
+  quota         Int
+  sold          Int       @default(0)
+  saleStartAt   DateTime?
+  saleEndAt     DateTime?
+  maxPerOrder   Int       @default(4)
+  maxPerAccount Int       @default(10)
+  templateType  String    @default("system")
+  templateUrl   String?
+  isInternal    Boolean   @default(false)
+  colorHex      String?
+  orderIndex    Int       @default(0)
+  status        CatStatus @default(DRAFT)
+
+  event      Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  orderItems OrderItem[]
+  tickets    Ticket[]
+}
+
+model EventGenre {
+  id      String @id @default(cuid())
+  eventId String
+  genre   String
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, genre])
+}
+
+model EventTag {
+  id      String @id @default(cuid())
+  eventId String
+  tag     String
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, tag])
+}
+
+model Order {
+  id               String      @id @default(cuid())
+  userId           String
+  eventId          String
+  idempotencyKey   String      @unique
+  status           OrderStatus @default(PENDING)
+  totalAmount      Int
+  discountAmount   Int         @default(0)
+  finalAmount      Int
+  referralCodeUsed String?
+  affiliateId      String?
+  midtransOrderId  String?     @unique
+  midtransToken    String?
+  paymentMethod    String?
+  paidAt           DateTime?
+  expiredAt        DateTime
+  fulfilledAt      DateTime?
+  isSuspicious     Boolean     @default(false)
+  suspiciousReason String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  user           User            @relation(fields: [userId], references: [id])
+  event          Event           @relation(fields: [eventId], references: [id])
+  items          OrderItem[]
+  tickets        Ticket[]
+  refundRequests RefundRequest[]
+
+  @@index([userId, status])
+  @@index([eventId, status])
+  @@index([status, expiredAt])
+  @@index([midtransOrderId])
+}
+
+model OrderItem {
+  id         String @id @default(cuid())
+  orderId    String
+  categoryId String
+  quantity   Int
+  unitPrice  Int
+  subtotal   Int
+
+  order    Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  category TicketCategory @relation(fields: [categoryId], references: [id])
+}
+
+model Ticket {
+  id            String       @id @default(cuid())
+  orderId       String
+  categoryId    String
+  userId        String
+  ticketCode    String       @unique
+  status        TicketStatus @default(PENDING)
+  holderName    String
+  holderEmail   String?
+  holderPhone   String?
+  holderRole    String?
+  isInternal    Boolean      @default(false)
+  qrEncrypted   String?      @db.Text
+  qrImageUrl    String?
+  pdfUrl        String?
+  emailSentAt   DateTime?
+  waSentAt      DateTime?
+  usedAt        DateTime?
+  usedGateId    String?
+  transferCount Int          @default(0)
+  generatedAt   DateTime?
+  createdAt     DateTime     @default(now())
+
+  order     Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  category  TicketCategory   @relation(fields: [categoryId], references: [id])
+  user      User             @relation(fields: [userId], references: [id])
+  scanLogs  ScanLog[]
+  transfers TicketTransfer[]
+  Event     Event?           @relation(fields: [eventId], references: [id])
+  eventId   String?
+  RfidCard  RfidCard?
+
+  @@index([userId, status])
+  @@index([orderId])
+  @@index([ticketCode])
+  @@index([status, categoryId])
+}
+
+enum TransferStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+model TicketTransfer {
+  id          String         @id @default(cuid())
+  ticketId    String
+  fromUserId  String
+  toUserId    String?
+  toEmail     String
+  message     String?
+  status      TransferStatus @default(PENDING)
+  initiatedAt DateTime
+  respondedAt DateTime?
+  expiredAt   DateTime
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+
+  @@index([ticketId])
+  @@index([toEmail, status])
+}
+
+model TicketResendLog {
+  id       String   @id @default(cuid())
+  ticketId String
+  userId   String
+  channel  String
+  sentAt   DateTime @default(now())
+
+  @@index([ticketId, sentAt])
+}
+
+model Gate {
+  id          String   @id @default(cuid())
+  eventId     String
+  name        String
+  categoryIds String[]
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  event    Event     @relation(fields: [eventId], references: [id])
+  scanLogs ScanLog[]
+}
+
+model ScanLog {
+  id        String   @id @default(cuid())
+  ticketId  String
+  gateId    String
+  staffId   String?
+  result    String
+  createdAt DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+  gate   Gate   @relation(fields: [gateId], references: [id])
+}
+
+model RfidCard {
+  id          String    @id @default(cuid())
+  uid         String    @unique
+  ticketId    String?   @unique
+  userId      String?
+  eventId     String
+  cardType    String
+  status      String    @default("INACTIVE")
+  balance     Int       @default(0)
+  issuedAt    DateTime?
+  activatedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  ticket       Ticket?           @relation(fields: [ticketId], references: [id])
+  user         User?             @relation(fields: [userId], references: [id])
+  event        Event             @relation(fields: [eventId], references: [id])
+  scanLogs     RfidScanLog[]
+  topups       RfidTopup[]
+  transactions RfidTransaction[]
+}
+
+model RfidScanLog {
+  id         String    @id @default(cuid())
+  cardId     String
+  gateId     String
+  staffId    String
+  result     String
+  accessType String?
+  syncedAt   DateTime?
+  createdAt  DateTime  @default(now())
+
+  card RfidCard @relation(fields: [cardId], references: [id])
+}
+
+model RfidTopup {
+  id        String   @id @default(cuid())
+  cardId    String
+  amount    Int
+  method    String
+  staffId   String
+  createdAt DateTime @default(now())
+
+  card RfidCard @relation(fields: [cardId], references: [id])
+}
+
+model RfidTransaction {
+  id          String   @id @default(cuid())
+  cardId      String
+  amount      Int
+  description String
+  boothId     String?
+  createdAt   DateTime @default(now())
+
+  card RfidCard @relation(fields: [cardId], references: [id])
+}
+
+model RfidBooth {
+  id         String @id @default(cuid())
+  eventId    String
+  name       String
+  operatorId String
+  minBalance Int    @default(0)
+}
+
+model AffiliatePartner {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  code        String   @unique
+  commission  Float    @default(0.10)
+  totalEarned Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+
+model AffiliateClick {
+  id        String   @id @default(cuid())
+  partnerId String
+  ip        String
+  eventId   String?
+  createdAt DateTime @default(now())
+}
+
+model ReferralTransaction {
+  id         String   @id @default(cuid())
+  referrerId String
+  referredId String
+  orderId    String?
+  reward     Int      @default(0)
+  status     String   @default("PENDING")
+  createdAt  DateTime @default(now())
+
+  referrer User @relation("Referrer", fields: [referrerId], references: [id])
+  referred User @relation("Referred", fields: [referredId], references: [id])
+}
+
+model RefundRequest {
+  id               String    @id @default(cuid())
+  orderId          String
+  userId           String
+  ticketIds        String[]
+  reason           String    @db.Text
+  refundAmount     Int
+  refundPercent    Float
+  status           String    @default("PENDING_REVIEW")
+  bankName         String?
+  bankAccount      String?
+  bankHolder       String?
+  adminNote        String?   @db.Text
+  processedAt      DateTime?
+  midtransRefundId String?
+  createdAt        DateTime  @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@index([status, createdAt])
+}
+
+model RefundPolicy {
+  id              String @id @default(cuid())
+  eventId         String
+  daysBeforeEvent Int
+  refundPercent   Float
+
+  @@unique([eventId, daysBeforeEvent])
+}
+
+model UserGameProfile {
+  id            String  @id @default(cuid())
+  userId        String  @unique
+  totalXp       Int     @default(0)
+  level         String  @default("BRONZE")
+  currentStreak Int     @default(0)
+  lastEventId   String?
+
+  user     User          @relation(fields: [userId], references: [id])
+  badges   UserBadge[]
+  missions UserMission[]
+  xpLogs   XpLog[]
+}
+
+model XpLog {
+  id          String   @id @default(cuid())
+  userId      String
+  eventId     String?
+  action      String
+  xpEarned    Int
+  description String
+  createdAt   DateTime @default(now())
+
+  userProfile UserGameProfile @relation(fields: [userId], references: [userId])
+}
+
+model Badge {
+  id          String  @id @default(cuid())
+  name        String
+  description String
+  iconUrl     String?
+  criteria    String  @db.Text
+  xpBonus     Int     @default(0)
+
+  users UserBadge[]
+}
+
+model UserBadge {
+  id       String   @id @default(cuid())
+  userId   String
+  badgeId  String
+  eventId  String?
+  earnedAt DateTime @default(now())
+
+  userProfile UserGameProfile @relation(fields: [userId], references: [userId])
+  badge       Badge           @relation(fields: [badgeId], references: [id])
+}
+
+model GameMission {
+  id          String   @id @default(cuid())
+  eventId     String
+  title       String
+  description String
+  xpReward    Int
+  missionType String
+  targetValue Int      @default(1)
+  startAt     DateTime
+  endAt       DateTime
+
+  event        Event         @relation(fields: [eventId], references: [id])
+  userMissions UserMission[]
+}
+
+model UserMission {
+  id          String    @id @default(cuid())
+  userId      String
+  missionId   String
+  progress    Int       @default(0)
+  isCompleted Boolean   @default(false)
+  completedAt DateTime?
+
+  userProfile UserGameProfile @relation(fields: [userId], references: [userId])
+  mission     GameMission     @relation(fields: [missionId], references: [id])
+}
+
+model CheckInPoint {
+  id        String  @id @default(cuid())
+  eventId   String
+  name      String
+  xpReward  Int
+  latitude  Float?
+  longitude Float?
+  qrCode    String?
+
+  event Event @relation(fields: [eventId], references: [id])
+}
+
+model LotteryEvent {
+  id                    String   @id @default(cuid())
+  eventId               String
+  name                  String
+  description           String?  @db.Text
+  registrationStart     DateTime
+  registrationEnd       DateTime
+  drawDate              DateTime
+  purchaseDeadlineHours Int      @default(24)
+  waitlistDeadlineHours Int      @default(12)
+  status                String   @default("UPCOMING")
+  isPublicResult        Boolean  @default(true)
+
+  event     Event             @relation(fields: [eventId], references: [id])
+  slots     LotterySlot[]
+  entries   LotteryEntry[]
+  auditLogs LotteryAuditLog[]
+}
+
+model LotterySlot {
+  id         String @id @default(cuid())
+  lotteryId  String
+  categoryId String
+  quota      Int
+  priority   Int    @default(1)
+
+  lottery LotteryEvent @relation(fields: [lotteryId], references: [id])
+}
+
+model LotteryEntry {
+  id               String    @id @default(cuid())
+  lotteryId        String
+  userId           String
+  preference1      String
+  preference2      String?
+  status           String    @default("REGISTERED")
+  drawPosition     Int?
+  waitlistPosition Int?
+  orderId          String?
+  notifiedAt       DateTime?
+  purchaseDeadline DateTime?
+  registeredAt     DateTime  @default(now())
+
+  lottery LotteryEvent @relation(fields: [lotteryId], references: [id])
+  user    User         @relation(fields: [userId], references: [id])
+}
+
+model LotteryAuditLog {
+  id        String   @id @default(cuid())
+  lotteryId String
+  action    String
+  detail    String   @db.Text
+  entropy   String?
+  createdAt DateTime @default(now())
+
+  lottery LotteryEvent @relation(fields: [lotteryId], references: [id])
+}
+
+model Reseller {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  quota     Int
+  area      String?
+  createdAt DateTime @default(now())
+}
+
+model ResellerOrder {
+  id         String   @id @default(cuid())
+  resellerId String
+  categoryId String
+  qty        Int
+  price      Int
+  status     String   @default("PENDING")
+  createdAt  DateTime @default(now())
+}
+
+model Settings {
+  id        String   @id @default("global")
+  key       String   @unique
+  value     String   @db.Text
+  category  String   @default("general")
+  updatedAt DateTime @updatedAt
+}

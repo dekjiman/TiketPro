@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
@@ -10,8 +10,7 @@ import BuyerForm from '@/components/checkout/BuyerForm';
 import AttendeeForm from '@/components/checkout/AttendeeForm';
 import PaymentMethod from '@/components/checkout/PaymentMethod';
 import OrderSummary from '@/components/checkout/OrderSummary';
-import { Button } from '@/components/ui/button';
-import { Loader2 } from 'lucide-react';
+import { Card } from '@/components/ui/card';
 
 interface TicketCategory {
   id: string;
@@ -57,18 +56,74 @@ export default function CheckoutPage() {
   const [buyerData, setBuyerData] = useState({ name: '', email: '', phone: '' });
   const [attendees, setAttendees] = useState<string[]>([]);
   const [paymentMethod, setPaymentMethod] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const totalQuantity = selectedItems.reduce((sum, item) => sum + item.qty, 0);
 
+  const handleSubmitOrder = async () => {
+    if (!event || selectedItems.length === 0 || !buyerData.name || !paymentMethod) return;
+
+    setIsSubmitting(true);
+    try {
+      const orderData = {
+        eventSlug,
+        items: selectedItems,
+        buyer: buyerData,
+        attendees: totalQuantity > 1 ? attendees : [],
+        paymentMethod,
+      };
+
+      const res = await api.post('/api/orders', orderData);
+      const { orderId, paymentUrl } = res.data;
+
+      if (paymentUrl) {
+        window.location.href = paymentUrl;
+      } else {
+        router.push(`/checkout/${eventSlug}/success?orderId=${orderId}`);
+      }
+    } catch (error) {
+      console.error('Order creation failed:', error);
+      // Handle error
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      router.push(`/login?redirect=/checkout/${eventSlug}`);
+    }
+  }, [isLoggedIn, router, eventSlug]);
+
   if (!isLoggedIn) {
-    router.push(`/login?redirect=/checkout/${eventSlug}`);
-    return null;
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-600">Checking authentication...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (categoriesLoading || eventLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading checkout...</p>
+        </div>
+      </div>
+    );
   }
 
   if (categoriesError) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <p>Error loading ticket categories: {categoriesErrorData?.message || 'Unknown error'}</p>
+        <Card className="p-6">
+          <h2 className="text-xl font-bold text-red-600 mb-2">Error</h2>
+          <p>Failed to load ticket categories: {categoriesErrorData?.message || 'Unknown error'}</p>
+        </Card>
       </div>
     );
   }
@@ -76,15 +131,10 @@ export default function CheckoutPage() {
   if (eventError) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <p>Error loading event: {eventErrorData?.message || 'Unknown error'}</p>
-      </div>
-    );
-  }
-
-  if (categoriesLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin" />
+        <Card className="p-6">
+          <h2 className="text-xl font-bold text-red-600 mb-2">Error</h2>
+          <p>Failed to load event: {eventErrorData?.message || 'Unknown error'}</p>
+        </Card>
       </div>
     );
   }
@@ -123,6 +173,8 @@ export default function CheckoutPage() {
               buyerData={buyerData}
               attendees={attendees}
               paymentMethod={paymentMethod}
+              onSubmit={handleSubmitOrder}
+              isSubmitting={isSubmitting}
             />
           </div>
         </div>
