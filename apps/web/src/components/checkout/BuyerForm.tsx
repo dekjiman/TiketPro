@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -20,36 +20,43 @@ type BuyerFormData = z.infer<typeof buyerSchema>;
 interface BuyerFormProps {
   data: { name: string; email: string; phone: string };
   onChange: (data: { name: string; email: string; phone: string }) => void;
-  onSubmit?: (data: { name: string; email: string; phone: string }) => void;
+  onSubmit?: (data: BuyerFormData) => void;
 }
 
 export default function BuyerForm({ data, onChange, onSubmit }: BuyerFormProps) {
   const { user } = useAuthStore();
 
-  const { register, handleSubmit, watch, formState: { errors } } = useForm<BuyerFormData>({
+  const { register, handleSubmit, watch, reset, formState: { errors } } = useForm<BuyerFormData>({
     resolver: zodResolver(buyerSchema),
     defaultValues: data,
   });
 
-  const watchedData = watch();
-
+  // Sync internal form state when data prop changes from parent (e.g. auto-fill)
   useEffect(() => {
-    onChange(watchedData);
-  }, [watchedData, onChange]);
-
-  useEffect(() => {
-    // Improved auto-fill logic: only auto-fill if the field is empty and user data exists
-    if (user) {
-      const updates: Partial<typeof data> = {};
-      if (!data.name && user.name) updates.name = user.name;
-      if (!data.email && user.email) updates.email = user.email;
-      if (!data.phone && user.phone) updates.phone = user.phone;
-
-      if (Object.keys(updates).length > 0) {
-        onChange({ ...data, ...updates });
-      }
+    const currentValues = watch();
+    if (
+      currentValues.name !== data.name ||
+      currentValues.email !== data.email ||
+      currentValues.phone !== data.phone
+    ) {
+      reset(data);
     }
-  }, [user, data, onChange]);
+  }, [data, reset, watch]);
+
+  // Notify parent only when form values actually change and differ from current props
+  useEffect(() => {
+    const subscription = watch((value) => {
+      const typedValue = value as BuyerFormData;
+      if (
+        typedValue.name !== data.name ||
+        typedValue.email !== data.email ||
+        typedValue.phone !== data.phone
+      ) {
+        onChange(typedValue);
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [watch, data, onChange]);
 
   const onFormSubmit = (formData: BuyerFormData) => {
     onSubmit?.(formData);

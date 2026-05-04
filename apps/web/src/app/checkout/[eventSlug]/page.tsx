@@ -10,7 +10,7 @@ import BuyerForm from '@/components/checkout/BuyerForm';
 import AttendeeForm from '@/components/checkout/AttendeeForm';
 import PaymentMethod from '@/components/checkout/PaymentMethod';
 import OrderSummary from '@/components/checkout/OrderSummary';
-import { Card } from '@/components/ui/card';
+import { Card } from '@/components/ui';
 
 interface TicketCategory {
   id: string;
@@ -43,7 +43,7 @@ export default function CheckoutPage() {
     },
   });
 
-  const { data: event, isError: eventError, error: eventErrorData } = useQuery({
+  const { data: event, isLoading: eventLoading, isError: eventError, error: eventErrorData } = useQuery({
     queryKey: ['event', eventSlug],
     queryFn: async () => {
       const res = await api.get(`/api/events/${eventSlug}`);
@@ -57,6 +57,18 @@ export default function CheckoutPage() {
   const [attendees, setAttendees] = useState<string[]>([]);
   const [paymentMethod, setPaymentMethod] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const { user } = useAuthStore();
+
+  // Auto-fill buyer data from user on mount
+  useEffect(() => {
+    if (user && !buyerData.name && !buyerData.email && !buyerData.phone) {
+      setBuyerData({
+        name: user.name || '',
+        email: user.email || '',
+        phone: user.phone || '',
+      });
+    }
+  }, [user, buyerData.name, buyerData.email, buyerData.phone]);
 
   const totalQuantity = selectedItems.reduce((sum, item) => sum + item.qty, 0);
 

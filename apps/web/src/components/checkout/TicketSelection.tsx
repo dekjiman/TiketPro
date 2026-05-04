@@ -1,8 +1,7 @@
 'use client';
 
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle, Button } from '@/components/ui';
 import { Minus, Plus } from 'lucide-react';
 
 interface TicketCategory {

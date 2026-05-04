@@ -2,9 +2,7 @@
 
 import { useEffect } from 'react';
 import { useFieldArray, useForm } from 'react-hook-form';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Input } from '@/components/ui/Input';
-import { Label } from '@/components/ui/Label';
+import { Card, CardContent, CardHeader, CardTitle, Input, Label } from '@/components/ui';
 
 interface AttendeeFormProps {
   quantity: number;
@@ -13,7 +11,7 @@ interface AttendeeFormProps {
 }
 
 export default function AttendeeForm({ quantity, attendees, onChange }: AttendeeFormProps) {
-  const { control, watch } = useForm({
+  const { control, watch, reset } = useForm({
     defaultValues: { attendees: attendees.map(name => ({ name })) },
   });
 
@@ -24,10 +22,25 @@ export default function AttendeeForm({ quantity, attendees, onChange }: Attendee
 
   const watchedAttendees = watch('attendees');
 
+  // Sync internal form state when attendees prop changes from parent
   useEffect(() => {
-    const names = watchedAttendees?.map(a => a.name || '') || [];
-    onChange(names);
-  }, [watchedAttendees, onChange]);
+    const currentValues = watch('attendees');
+    const currentNames = currentValues?.map(a => a?.name || '') || [];
+    if (JSON.stringify(currentNames) !== JSON.stringify(attendees)) {
+      reset({ attendees: attendees.map(name => ({ name })) });
+    }
+  }, [attendees, reset, watch]);
+
+  // Notify parent only when values actually change
+  useEffect(() => {
+    const subscription = watch((value) => {
+      const names = value.attendees?.map(a => a?.name || '') || [];
+      if (JSON.stringify(names) !== JSON.stringify(attendees)) {
+        onChange(names);
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [watch, attendees, onChange]);
 
   if (quantity <= 1) return null;
 

@@ -1,7 +1,6 @@
 'use client';
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle, Button } from '@/components/ui';
 
 const paymentMethods = [
   { id: 'qris', name: 'QRIS', description: 'Bayar dengan QR code', icon: '💳' },
@@ -26,7 +25,7 @@ export default function PaymentMethod({ selected, onChange }: PaymentMethodProps
           {paymentMethods.map(method => (
             <Button
               key={method.id}
-              variant={selected === method.id ? 'default' : 'outline'}
+              variant={selected === method.id ? 'primary' : 'outline'}
               className="h-auto p-4 justify-start"
               onClick={() => onChange(method.id)}
             >

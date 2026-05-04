@@ -1,0 +1,72 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.production.local
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+.turbo/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+.vim/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+
+# Prisma
+prisma/dev.db
+prisma/dev.db-journal
+
+# Next.js
+.next/
+out/
+
+# Redis
+dump.rdb
+
+# Uploads
+public/uploads/*
+!public/uploads/.gitkeep
+
+# Temporary files
+*.tmp
+.cache/
+
+# IDE Extensions
+.vscode/extensions/
+
+# Workspace specific
+.turbopack/
+dist-ssr/

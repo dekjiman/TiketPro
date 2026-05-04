@@ -1173,14 +1173,48 @@ export async function eventRoutes(fastify: FastifyInstance) {
     return category;
   });
 
-  fastify.get('/:id/ticket-categories', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { id } = req.params as any;
-    const categories = await (prisma as any).ticketCategory.findMany({
-      where: { eventId: id },
-      select: { id: true, name: true, price: true, quota: true, sold: true },
-    });
-    return categories;
-  });
+   fastify.get('/:id/ticket-categories', async (req: FastifyRequest, reply: FastifyReply) => {
+     const { id } = req.params as any;
+     const event = await (prisma as any).event.findFirst({
+       where: { OR: [{ slug: id }, { id }] },
+     });
+     if (!event) return reply.code(404).send({ error: 'Event not found' });
+
+     const categories = await (prisma as any).ticketCategory.findMany({
+       where: { eventId: event.id },
+       select: {
+         id: true,
+         name: true,
+         price: true,
+         quota: true,
+         sold: true,
+         maxPerOrder: true,
+         saleStartAt: true,
+         saleEndAt: true,
+       },
+     });
+
+     const now = new Date();
+     return categories.map((cat: any) => {
+       const available = cat.quota - cat.sold;
+       let status = 'AVAILABLE';
+       if (cat.saleStartAt && new Date(cat.saleStartAt) > now) {
+         status = 'UPCOMING';
+       } else if (cat.saleEndAt && new Date(cat.saleEndAt) < now) {
+         status = 'CLOSED';
+       } else if (available <= 0) {
+         status = 'SOLD_OUT';
+       }
+       return {
+         id: cat.id,
+         name: cat.name,
+         price: cat.price,
+         available,
+         maxPerOrder: cat.maxPerOrder,
+         status,
+       };
+     });
+   });
 
   // ========== GENRES & TAGS ==========
   fastify.post('/:id/genres', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
@@ -1320,102 +1354,50 @@ export async function eventRoutes(fastify: FastifyInstance) {
     return { success: true, status: 'PUBLISHED' };
   });
 
-  fastify.get('/:slugOrId/ticket-availability', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { slugOrId } = req.params as any;
-    
-    const event = await (prisma as any).event.findFirst({
-      where: { OR: [{ slug: slugOrId }, { id: slugOrId }] },
-      select: { 
-        id: true,
-        status: true,
-        categories: { 
-          select: { id: true, name: true, quota: true, sold: true, saleStartAt: true, saleEndAt: true }
-        }
-      },
-    });
+   fastify.get('/:slugOrId/ticket-availability', async (req: FastifyRequest, reply: FastifyReply) => {
+     const { slugOrId } = req.params as any;
+     
+     const event = await (prisma as any).event.findFirst({
+       where: { OR: [{ slug: slugOrId }, { id: slugOrId }] },
+       select: { 
+         id: true,
+         status: true,
+         categories: { 
+           select: { id: true, name: true, quota: true, sold: true, saleStartAt: true, saleEndAt: true }
+         }
+       },
+     });
 
-    if (!event) return reply.code(404).send({ error: 'Event not found' });
+     if (!event) return reply.code(404).send({ error: 'Event not found' });
 
-    const now = new Date();
-    const categories = (event.categories || []).map((cat: any) => {
-      const available = cat.quota - cat.sold;
-      let status = 'AVAILABLE';
-      
-      if (cat.saleStartAt && new Date(cat.saleStartAt) > now) {
-        status = 'NOT_YET';
-      } else if (cat.saleEndAt && new Date(cat.saleEndAt) < now) {
-        status = 'CLOSED';
-      } else if (available <= 0) {
-        status = 'SOLD_OUT';
-      } else if (available < 50) {
-        status = 'LOW_STOCK';
-      }
+     const now = new Date();
+     const categories = (event.categories || []).map((cat: any) => {
+       const available = cat.quota - cat.sold;
+       let status = 'AVAILABLE';
+       
+       if (cat.saleStartAt && new Date(cat.saleStartAt) > now) {
+         status = 'NOT_YET';
+       } else if (cat.saleEndAt && new Date(cat.saleEndAt) < now) {
+         status = 'CLOSED';
+       } else if (available <= 0) {
+         status = 'SOLD_OUT';
+       } else if (available < 50) {
+         status = 'LOW_STOCK';
+       }
 
-      return {
-        id: cat.id,
-        name: cat.name,
-        available,
-        sold: cat.sold,
-        status,
-      };
-    });
+       return {
+         id: cat.id,
+         name: cat.name,
+         available,
+         sold: cat.sold,
+         status,
+       };
+     });
 
-    return { categories };
-  });
+     return { categories };
+   });
 
-  // ========== GET TICKET CATEGORIES FOR CHECKOUT ==========
-  fastify.get('/:slugOrId/ticket-categories', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { slugOrId } = req.params as any;
-
-    const event = await (prisma as any).event.findFirst({
-      where: { OR: [{ slug: slugOrId }, { id: slugOrId }] },
-      select: {
-        id: true,
-        status: true,
-        categories: {
-          select: {
-            id: true,
-            name: true,
-            price: true,
-            quota: true,
-            sold: true,
-            maxPerOrder: true,
-            saleStartAt: true,
-            saleEndAt: true
-          }
-        }
-      },
-    });
-
-    if (!event) return reply.code(404).send({ error: 'Event not found' });
-
-    const now = new Date();
-    const categories = (event.categories || []).map((cat: any) => {
-      const available = cat.quota - cat.sold;
-      let status = 'AVAILABLE';
-
-      if (cat.saleStartAt && new Date(cat.saleStartAt) > now) {
-        status = 'UPCOMING';
-      } else if (cat.saleEndAt && new Date(cat.saleEndAt) < now) {
-        status = 'CLOSED';
-      } else if (available <= 0) {
-        status = 'SOLD_OUT';
-      }
-
-      return {
-        id: cat.id,
-        name: cat.name,
-        price: cat.price,
-        available,
-        maxPerOrder: cat.maxPerOrder,
-        status,
-      };
-    });
-
-    return categories;
-  });
-
-  // ========== GET CATEGORY BY ID ==========
+   // ========== GET CATEGORY BY ID ==========
   fastify.get('/categories/:id', async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     const category = await (prisma as any).ticketCategory.findUnique({
