@@ -114,7 +114,7 @@ export default function AdminDashboardPage() {
   if (!user || user.role !== 'SUPER_ADMIN') {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+        <div className="w-8 h-8 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -140,7 +140,7 @@ export default function AdminDashboardPage() {
 
       {loading && (
         <div className="flex justify-center py-12">
-          <div className="w-8 h-8 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
         </div>
       )}
 
@@ -196,7 +196,7 @@ export default function AdminDashboardPage() {
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="font-medium text-slate-900 dark:text-white">Pending EO ({data.pendingEoList?.length || 0})</h3>
-                  <Link href="/admin/users?status=PENDING_APPROVAL&role=EO_ADMIN" className="text-sm text-[#065F46] flex items-center gap-1">
+                  <Link href="/admin/users?status=PENDING_APPROVAL&role=EO_ADMIN" className="text-sm text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
                     Lihat semua <ArrowRight className="w-4 h-4" />
                   </Link>
                 </div>
@@ -227,7 +227,7 @@ export default function AdminDashboardPage() {
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="font-medium text-slate-900 dark:text-white">Need Approval Event ({data.pendingEventsList?.length || 0})</h3>
-                  <Link href="/admin/events?status=REVIEW" className="text-sm text-[#065F46] flex items-center gap-1">
+                  <Link href="/admin/events?status=REVIEW" className="text-sm text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
                     Lihat semua <ArrowRight className="w-4 h-4" />
                   </Link>
                 </div>

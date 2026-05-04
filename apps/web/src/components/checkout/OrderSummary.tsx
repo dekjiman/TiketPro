@@ -3,8 +3,8 @@
 'use client';
 
 import { forwardRef, HTMLAttributes } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Button } from '@/components/ui/Button';
 
 interface SeparatorProps extends HTMLAttributes<HTMLDivElement> {}
 
@@ -25,6 +25,7 @@ interface TicketCategory {
   id: string;
   name: string;
   price: number;
+  status?: string;
 }
 
 interface Event {
@@ -41,9 +42,11 @@ interface OrderSummaryProps {
   categories: TicketCategory[];
   buyerData: { name: string; email: string; phone: string };
   attendees: string[];
-  paymentMethod: string;
   onSubmit?: () => void;
   isSubmitting?: boolean;
+  onMobileSubmit?: () => void;
+  showMobileCta?: boolean;
+  stockWarning?: string;
 }
 
 export default function OrderSummary({
@@ -52,24 +55,30 @@ export default function OrderSummary({
   categories,
   buyerData,
   attendees,
-  paymentMethod,
   onSubmit,
   isSubmitting,
+  onMobileSubmit,
+  showMobileCta,
+  stockWarning,
 }: OrderSummaryProps) {
   const subtotal = selectedItems.reduce((sum, item) => {
     const category = categories.find(c => c.id === item.categoryId);
     return sum + (category?.price || 0) * item.qty;
   }, 0);
 
-  const serviceFee = Math.round(subtotal * 0.02); // 2% service fee
+  const serviceFee = Math.round(subtotal * 0.02);
   const total = subtotal + serviceFee;
 
   const isValid =
     selectedItems.length > 0 &&
+    selectedItems.every(item => {
+      const category = categories.find(c => c.id === item.categoryId);
+      const status = category?.status;
+      return status !== 'CLOSED' && status?.toLowerCase() !== 'close';
+    }) &&
     buyerData.name &&
     buyerData.email &&
     buyerData.phone &&
-    paymentMethod &&
     attendees.every(name => name.trim());
 
   const formatCurrency = (amount: number) =>
@@ -82,6 +91,11 @@ export default function OrderSummary({
           <CardTitle>Ringkasan Pesanan</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {stockWarning ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {stockWarning}
+            </div>
+          ) : null}
           {event && (
             <div>
               <h3 className="font-semibold">{event.title}</h3>
@@ -147,6 +161,19 @@ export default function OrderSummary({
           </Button>
         </CardContent>
       </Card>
+      {showMobileCta ? (
+        <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-200 bg-white px-4 py-3 lg:hidden">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs text-slate-500">Total</p>
+              <p className="text-base font-bold">{formatCurrency(total)}</p>
+            </div>
+            <Button disabled={!isValid || isSubmitting} onClick={onMobileSubmit || onSubmit}>
+              {isSubmitting ? 'Memproses...' : 'Bayar'}
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

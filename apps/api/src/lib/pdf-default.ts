@@ -259,7 +259,7 @@ export async function generateDefaultPdf(
     });
 
     const instruction =
-      'Tunjukkan票卷 isto kepada petugas\ndi pintu masuk';
+      'Tunjukkan tiket ini kepada petugas\ndi pintu masuk';
     const lines = instruction.split('\n');
     let instructionY = y + 30;
     for (const line of lines) {

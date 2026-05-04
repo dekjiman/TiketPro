@@ -1,5 +1,5 @@
 import { Queue, Worker } from 'bullmq';
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost';
 const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379');
@@ -7,7 +7,7 @@ const REDIS_PORT = parseInt(process.env.REDIS_PORT || '6379');
 export const redis = new Redis({
   host: REDIS_HOST,
   port: REDIS_PORT,
-  maxRetriesPerRequest: 3,
+  maxRetriesPerRequest: null, // Required by BullMQ
 });
 
 export async function connectRedis() {
@@ -24,12 +24,14 @@ export async function connectRedis() {
 }
 
 export const Queues = {
-  ORDER_EXPIRE: 'order:expire',
-  TICKET_GENERATE: 'ticket:generate',
-  EMAIL_SEND: 'email:send',
-  SMS_SEND: 'sms:send',
-  XP_CALC: 'xp:calculate',
-  LEADERBOARD_UPDATE: 'leaderboard:update',
+  ORDER_EXPIRE: 'order-expire',
+  TICKET_GENERATE: 'ticket-generate',
+  TICKET_WA: 'ticket-wa',
+  TICKET_RESEND: 'ticket-resend',
+  EMAIL_SEND: 'email-send',
+  SMS_SEND: 'sms-send',
+  XP_CALC: 'xp-calculate',
+  LEADERBOARD_UPDATE: 'leaderboard-update',
 };
 
 export function createQueue(name: string) {

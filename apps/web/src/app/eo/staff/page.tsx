@@ -27,6 +27,7 @@ export default function EoStaffPage() {
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteMessage, setInviteMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [resendingId, setResendingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (user && user.role !== 'EO_ADMIN') {
@@ -87,11 +88,24 @@ export default function EoStaffPage() {
     }
   };
 
+  const handleResend = async (id: string) => {
+    if (resendingId) return;
+    setResendingId(id);
+    try {
+      await api.post(`/api/eo/invites/${id}/resend`);
+      toast.showToast('success', 'Undangan berhasil dikirim ulang');
+    } catch (err) {
+      toast.showToast('error', getApiError(err).error);
+    } finally {
+      setResendingId(null);
+    }
+  };
+
   if (!user || user.role !== 'EO_ADMIN') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-8 h-8 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
           <p className="text-sm text-slate-500">Checking permissions...</p>
         </div>
       </div>
@@ -125,7 +139,7 @@ export default function EoStaffPage() {
               value={inviteMessage}
               onChange={(e) => setInviteMessage(e.target.value)}
               placeholder="Pesan tambahan untuk staff..."
-              className="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#065F46]/50 focus:border-[#065F46] outline-none transition resize-none"
+              className="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-600 outline-none transition resize-none"
               rows={3}
             />
           </div>
@@ -140,7 +154,7 @@ export default function EoStaffPage() {
         
         {loading ? (
           <div className="flex justify-center py-8">
-            <div className="w-6 h-6 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+            <div className="w-6 h-6 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
           </div>
         ) : error ? (
           <div className="text-center py-8">
@@ -170,6 +184,17 @@ export default function EoStaffPage() {
                   }`}>
                     {invite.status === 'PENDING' && !invite.isExpired ? 'Menunggu' : invite.status}
                   </span>
+                  {invite.status === 'PENDING' && !invite.isExpired && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      loading={resendingId === invite.id}
+                      disabled={!!resendingId}
+                      onClick={() => handleResend(invite.id)}
+                    >
+                      Resend
+                    </Button>
+                  )}
                   {invite.status === 'PENDING' && !invite.isExpired && (
                     <Button
                       variant="ghost"

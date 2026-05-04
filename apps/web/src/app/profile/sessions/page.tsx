@@ -30,7 +30,7 @@ export default function SessionsPage() {
     setError('');
     try {
       const response = await api.get<{ data: Session[] }>('/api/users/me/sessions');
-      const res = response.data?.data?.data || response.data?.data || response.data || response.data?.data || [];
+      const res = response.data;
       setSessions(Array.isArray(res) ? res : []);
     } catch (err) {
       setError(getApiError(err).error);
@@ -112,7 +112,7 @@ export default function SessionsPage() {
     <div className="max-w-2xl mx-auto py-8 space-y-6">
 <div className="flex items-center justify-between">
           <div>
-            <Link href="/profile" className="text-sm text-slate-500 hover:text-[#065F46]">
+            <Link href="/profile" className="text-sm text-slate-500 hover:text-emerald-700 dark:hover:text-emerald-400">
               ← Kembali ke Profil
             </Link>
             <h1 className="text-2xl font-bold mt-2" style={{ fontFamily: 'Manrope' }}>
@@ -130,7 +130,7 @@ export default function SessionsPage() {
           <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
             <div className="flex items-center justify-between">
               <p className="text-red-600 dark:text-red-400 text-sm">{error}</p>
-              <button onClick={loadSessions} className="text-sm text-[#065F46] hover:underline ml-4">
+              <button onClick={loadSessions} className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline ml-4">
                 Retry
               </button>
             </div>

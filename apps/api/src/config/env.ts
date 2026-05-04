@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+const booleanEnv = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n', 'off', ''].includes(normalized)) return false;
+  }
+  return value;
+}, z.boolean());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   
@@ -17,7 +26,7 @@ const envSchema = z.object({
   
   MIDTRANS_SERVER_KEY: z.string().optional(),
   MIDTRANS_CLIENT_KEY: z.string().optional(),
-  MIDTRANS_IS_PRODUCTION: z.coerce.boolean().default(false),
+  MIDTRANS_IS_PRODUCTION: booleanEnv.default(false),
   
   RESEND_API_KEY: z.string().optional(),
   FONNTE_API_KEY: z.string().optional(),

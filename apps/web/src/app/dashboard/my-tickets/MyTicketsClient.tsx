@@ -5,10 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { api, getApiError } from '@/lib/api';
 import { Button } from '@/components/ui';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Loader2, Ticket, Clock, AlertCircle, Plus, RefreshCw } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
+import { Loader2, Ticket, Clock, AlertCircle, Plus, RefreshCw, User, Eye } from 'lucide-react';
 import { toast } from 'sonner';
 import Link from 'next/link';
+import { ensureMidtransSnap } from '@/lib/midtrans';
+import axios from 'axios';
 
 interface Ticket {
   id: string;
@@ -31,6 +33,12 @@ interface Order {
   finalAmount: number;
   expiredAt: string;
   event: { title: string; startDate: string };
+  user?: { name: string };
+  tickets?: Array<{
+    id: string;
+    holderName: string;
+    category: { name: string };
+  }>;
 }
 
 function formatCurrency(amount: number): string {
@@ -50,7 +58,10 @@ function formatDate(date: string): string {
 }
 
 function formatCountdown(expiredAt: string): string {
-  const diff = new Date(expiredAt).getTime() - Date.now();
+  const expiredDate = new Date(expiredAt);
+  const now = new Date();
+  const diff = expiredDate.getTime() - now.getTime();
+
   if (diff <= 0) return 'Expired';
   const mins = Math.floor(diff / 60000);
   const hours = Math.floor(mins / 60);
@@ -58,13 +69,30 @@ function formatCountdown(expiredAt: string): string {
   return `${mins}m`;
 }
 
+function getStatusBadge(status: string) {
+  const statuses = {
+    ACTIVE: { color: 'bg-green-100 text-green-800', label: 'Aktif' },
+    PENDING: { color: 'bg-blue-100 text-blue-800', label: 'Diproses' },
+    CHECKIN: { color: 'bg-gray-100 text-gray-800', label: 'Checkin' },
+    USED: { color: 'bg-gray-100 text-gray-800', label: 'Checkin' },
+    CANCELLED: { color: 'bg-red-100 text-red-800', label: 'Dibatalkan' }
+  };
+  return statuses[status as keyof typeof statuses] || { color: 'bg-gray-100 text-gray-800', label: status };
+}
+
 function TicketCard({ ticket }: { ticket: Ticket }) {
   const [loading, setLoading] = useState(false);
+  const statusInfo = getStatusBadge(ticket.status);
 
   const handleDownload = async () => {
+    if (!ticket.pdfUrl) {
+      toast.error('PDF tiket belum siap. Klik "Generate Ulang PDF" untuk mencoba lagi.');
+      return;
+    }
+
     setLoading(true);
     try {
-      const res = await api.get(`/tickets/${ticket.id}/download`, { responseType: 'blob' });
+      const res = await api.get(`/api/tickets/${ticket.id}/download`, { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const link = document.createElement('a');
       link.href = url;
@@ -72,32 +100,39 @@ function TicketCard({ ticket }: { ticket: Ticket }) {
       document.body.appendChild(link);
       link.click();
       link.remove();
-    } catch {
-      toast.error('Gagal download');
+      toast.success('Tiket berhasil diunduh');
+    } catch (err) {
+      const code = axios.isAxiosError(err) ? (err.response?.data as any)?.error : '';
+      if (code === 'PDF_NOT_FOUND') {
+        toast.error('PDF tiket sedang digenerate ulang setelah transfer. Coba lagi beberapa detik.');
+      } else {
+        toast.error(getApiError(err).error || 'Gagal mengunduh tiket');
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const handleResend = async () => {
+  const handleRegeneratePdf = async () => {
     setLoading(true);
     try {
-      await api.post(`/tickets/${ticket.id}/resend`, { channel: 'both' });
-      toast.success('Tiket dikirim ulang');
+      await api.post(`/api/tickets/${ticket.id}/regenerate-pdf`);
+      toast.success('Permintaan generate ulang PDF dikirim');
     } catch (err) {
-      toast.error(getApiError(err).message);
+      toast.error(getApiError(err).error || 'Gagal meminta generate ulang PDF');
     } finally {
       setLoading(false);
     }
   };
 
   const isTransferable = ticket.status === 'ACTIVE' && !ticket.isInternal;
+  const isPdfReady = Boolean(ticket.pdfUrl);
 
   return (
-    <div className="bg-white rounded-lg border shadow-sm overflow-hidden">
+    <div className="bg-white rounded-lg border shadow-sm overflow-visible">
       <div
         className="h-2"
-        style={{ backgroundColor: ticket.category.colorHex || '#065F46' }}
+        style={{ backgroundColor: ticket.category.colorHex || 'var(--primary)' }}
       />
       <div className="p-4">
         <div className="flex justify-between items-start mb-3">
@@ -107,8 +142,8 @@ function TicketCard({ ticket }: { ticket: Ticket }) {
               {formatDate(ticket.order.event.startDate)} • {ticket.order.event.city}
             </p>
           </div>
-          <span className="px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800">
-            {ticket.status}
+          <span className={`px-2 py-1 text-xs font-medium rounded-full ${statusInfo.color}`}>
+            {statusInfo.label}
           </span>
         </div>
 
@@ -128,17 +163,34 @@ function TicketCard({ ticket }: { ticket: Ticket }) {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={handleDownload} disabled={loading}>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Download'}
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleResend} disabled={loading}>
-            Kirim Ulang
-          </Button>
-          {isTransferable && (
+          {ticket.status === 'ACTIVE' ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={isPdfReady ? handleDownload : handleRegeneratePdf}
+                disabled={loading}
+              >
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : isPdfReady ? 'Download' : 'Generate Ulang PDF'}
+              </Button>
+              {isTransferable && (
+                <Button variant="outline" size="sm" asChild>
+                  <Link href={`/dashboard/my-tickets/tickets/${ticket.id}/transfer`}>
+                    <span className="flex items-center">
+                      <RefreshCw className="h-4 w-4 mr-1" />
+                      Transfer
+                    </span>
+                  </Link>
+                </Button>
+              )}
+            </>
+          ) : (
             <Button variant="outline" size="sm" asChild>
-              <Link href={`/my-tickets/tickets/${ticket.id}/transfer`}>
-                <RefreshCw className="h-4 w-4 mr-1" />
-                Transfer
+              <Link href={`/dashboard/my-tickets/tickets/${ticket.id}`}>
+                <span className="flex items-center">
+                  <Eye className="h-4 w-4 mr-1" />
+                  Lihat
+                </span>
               </Link>
             </Button>
           )}
@@ -151,28 +203,59 @@ function TicketCard({ ticket }: { ticket: Ticket }) {
 function OrderCard({ order, onPay }: { order: Order; onPay: () => void }) {
   const [loading, setLoading] = useState(false);
   const countdown = formatCountdown(order.expiredAt);
+  const isExpired = countdown === 'Expired';
+
+  // Get holder name(s) from tickets or buyer name
+  const getHolderDisplay = () => {
+    if (order.tickets && order.tickets.length > 0) {
+      if (order.tickets.length === 1) {
+        return `Pemegang: ${order.tickets[0].holderName}`;
+      }
+      // Multiple tickets - show first holder + count
+      const firstHolder = order.tickets[0].holderName;
+      const remaining = order.tickets.length - 1;
+      return `Pemegang: ${firstHolder}${remaining > 0 ? ` +${remaining} lainnya` : ''}`;
+    }
+
+    // No tickets yet - show buyer name
+    return `Pembeli: ${order.user?.name || 'N/A'}`;
+  };
 
   return (
-    <div className="bg-white rounded-lg border shadow-sm p-4">
+    <div className={`bg-white rounded-lg border shadow-sm p-4 ${isExpired ? 'border-red-200 bg-red-50' : 'border-orange-200 bg-orange-50'}`}>
       <div className="flex justify-between items-start mb-3">
         <div>
           <h3 className="font-semibold">{order.event.title}</h3>
           <p className="text-sm text-gray-500">
             {formatDate(order.event.startDate)}
           </p>
+          <div className="flex items-center text-sm text-gray-600 mt-1">
+            <User className="h-3 w-3 mr-1" />
+            <span>{getHolderDisplay()}</span>
+          </div>
         </div>
-        {countdown !== 'Expired' && (
+        {isExpired ? (
+          <div className="flex items-center gap-1 text-sm text-red-600">
+            <AlertCircle className="h-4 w-4" />
+            <span>Kedaluwarsa</span>
+          </div>
+        ) : (
           <div className="flex items-center gap-1 text-sm text-orange-600">
             <Clock className="h-4 w-4" />
-            <span>{countdown}</span>
+            <span>{countdown} tersisa</span>
           </div>
         )}
       </div>
 
       <div className="flex justify-between items-center">
         <span className="font-bold text-lg">{formatCurrency(order.finalAmount)}</span>
-        <Button onClick={onPay} disabled={loading || countdown === 'Expired'}>
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Bayar Sekarang'}
+        <Button
+          onClick={onPay}
+          disabled={loading || isExpired}
+          variant={isExpired ? 'outline' : 'primary'}
+          className={isExpired ? 'opacity-50 cursor-not-allowed' : ''}
+        >
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : isExpired ? 'Kedaluwarsa' : 'Bayar Sekarang'}
         </Button>
       </div>
     </div>
@@ -186,15 +269,20 @@ export function MyTicketsClient() {
   const { data: activeTickets, isLoading: loadingActive } = useQuery({
     queryKey: ['tickets', 'ACTIVE'],
     queryFn: async () => {
-      const res = await api.get('/tickets/mine?status=ACTIVE');
+      const res = await api.get('/api/tickets/mine?status=ACTIVE');
       return res.data.tickets as Ticket[];
+    },
+    refetchInterval: (query) => {
+      const tickets = (query.state.data as Ticket[] | undefined) || [];
+      const hasPendingPdf = tickets.some((t) => !t.pdfUrl);
+      return hasPendingPdf ? 5000 : false;
     },
   });
 
   const { data: pendingOrders, isLoading: loadingPending } = useQuery({
     queryKey: ['orders', 'PENDING'],
     queryFn: async () => {
-      const res = await api.get('/orders/mine?status=PENDING');
+      const res = await api.get('/api/orders/mine?status=PENDING');
       return res.data as Order[];
     },
   });
@@ -202,18 +290,20 @@ export function MyTicketsClient() {
   const { data: allTickets, isLoading: loadingAll } = useQuery({
     queryKey: ['tickets', 'all'],
     queryFn: async () => {
-      const res = await api.get('/tickets/mine');
+      const res = await api.get('/api/tickets/mine');
       return res.data.tickets as Ticket[];
     },
   });
 
   const handlePay = async (order: Order) => {
     try {
-      const res = await api.get(`/orders/${order.id}`);
+      const res = await api.get(`/api/orders/${order.id}`);
       const { paymentToken, paymentUrl } = res.data;
-      if (paymentToken && window.snap) {
-        window.snap.pay(paymentToken, {
-          onSuccess: () => router.push(`/checkout/success?orderId=${order.id}`),
+      const snap = paymentToken ? await ensureMidtransSnap() : null;
+      if (paymentToken && snap?.pay) {
+        const redirectSlug = (order as any)?.event?.slug || (order as any)?.event?.id || 'events';
+        snap.pay(paymentToken, {
+          onSuccess: () => router.push(`/checkout/${redirectSlug}/success?orderId=${order.id}`),
           onPending: () => router.refresh(),
           onError: (err: any) => toast.error(err.status_message || 'Payment failed'),
         });
@@ -221,7 +311,7 @@ export function MyTicketsClient() {
         window.location.href = paymentUrl;
       }
     } catch (err) {
-      toast.error(getApiError(err).message);
+      toast.error(getApiError(err).error);
     }
   };
 
@@ -232,13 +322,15 @@ export function MyTicketsClient() {
           <h1 className="text-2xl font-bold">Tiket Saya</h1>
           <Button asChild>
             <Link href="/events">
-              <Plus className="h-4 w-4 mr-2" />
-              Cari Tiket
+              <span className="flex items-center">
+                <Plus className="h-4 w-4 mr-2" />
+                Cari Tiket
+              </span>
             </Link>
           </Button>
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <Tabs value={activeTab} onValueChange={setActiveTab} defaultValue="active">
           <TabsList className="mb-6">
             <TabsTrigger value="active">
               Aktif ({activeTickets?.length || 0})
@@ -348,7 +440,7 @@ export function MyTicketsClient() {
                         </td>
                         <td className="py-3 px-4">
                           <Button variant="ghost" size="sm" asChild>
-                            <Link href={`/tickets/${ticket.id}`}>Lihat</Link>
+                            <Link href={`/dashboard/my-tickets/tickets/${ticket.id}`}>Lihat</Link>
                           </Button>
                         </td>
                       </tr>

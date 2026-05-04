@@ -4,9 +4,10 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, Input } from '@/components/ui';
-import { authApi } from '@/lib/auth';
-import type { User } from '@/lib/auth';
+import { authApi } from '@/lib/api';
+import { API_URL } from '@/lib/api';
 import { validateEmail, validatePassword } from '@/lib/validation';
+import type { User } from '@/store/authStore';
 
 interface LoginFormProps {
   onSuccess?: (user: User) => void;
@@ -37,10 +38,13 @@ export function LoginForm({ onSuccess, redirectTo = '/dashboard' }: LoginFormPro
     setLoading(true);
 
     try {
-      const res = await authApi.login(email, password);
-      localStorage.setItem('token', res.accessToken);
-      localStorage.setItem('user', JSON.stringify(res.user));
-      onSuccess?.(res.user);
+      await authApi.login(email, password);
+      // Validate server session/cookie before navigating to protected routes.
+      const meRes = await authApi.me();
+      const user = meRes.data;
+      localStorage.setItem('user', JSON.stringify(user));
+      document.cookie = `user=${encodeURIComponent(JSON.stringify(user))}; path=/; max-age=604800`;
+      onSuccess?.(user);
       router.push(redirectTo);
     } catch (err: any) {
       setServerError(err.message || 'Email atau password salah');
@@ -50,7 +54,7 @@ export function LoginForm({ onSuccess, redirectTo = '/dashboard' }: LoginFormPro
   };
 
   const handleGoogleLogin = () => {
-    window.location.href = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000'}/api/auth/google`;
+    window.location.href = `${API_URL}/api/auth/google`;
   };
 
   return (
@@ -82,7 +86,7 @@ export function LoginForm({ onSuccess, redirectTo = '/dashboard' }: LoginFormPro
       />
 
       <div className="flex justify-end -mt-2">
-        <Link href="/forgot-password" className="text-sm text-[#065F46] hover:underline">
+        <Link href="/forgot-password" className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline">
           Lupa password?
         </Link>
       </div>

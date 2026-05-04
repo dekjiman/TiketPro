@@ -51,10 +51,11 @@ export function RundownForm({ initialData, eventId, onUpdate }: RundownFormProps
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await api.get(`/api/events/${eventId}`);
-        const data = res.data?.data || res.data;
-        if (data?.startDate) {
-          const [y, m, d] = data.startDate.split('T')[0].split('-').map(Number);
+        // Use managed endpoint so EO can read draft/unpublished event data.
+        const res = await api.get(`/api/events/${eventId}/full`);
+        const eventData = res.data?.data || res.data;
+        if (eventData?.startDate) {
+          const [y, m, d] = eventData.startDate.split('T')[0].split('-').map(Number);
           setEventStartDate(new Date(y, m - 1, d));
         }
       } catch (e) { console.error(e); }
@@ -96,10 +97,12 @@ export function RundownForm({ initialData, eventId, onUpdate }: RundownFormProps
 
       if (editingItem?.id) {
         const res = await api.patch(`/api/events/rundown/${editingItem.id}`, payload);
-        setRundowns(ps => ps.map(r => r.id === editingItem.id ? res.data[0] : r));
+        const updated = res.data?.data?.[0] || res.data?.[0] || res.data;
+        setRundowns(ps => ps.map(r => r.id === editingItem.id ? updated : r));
       } else {
         const res = await api.post(`/api/events/${eventId}/rundown`, payload);
-        setRundowns(ps => [...ps, res.data[0]]);
+        const created = res.data?.data?.[0] || res.data?.[0] || res.data;
+        setRundowns(ps => [...ps, created]);
       }
 
       setShowForm(false);

@@ -29,7 +29,7 @@ interface AuthState {
 
 interface AuthActions {
   setUser: (user: User | null) => void;
-  login: (email: string, password: string, captchaToken?: string) => Promise<void>;
+  login: (email: string, password: string, captchaToken?: string, rememberMe?: boolean) => Promise<void>;
   register: (data: { name: string; email: string; password: string; phone?: string; role?: UserRole }) => Promise<void>;
   logout: () => Promise<void>;
   checkAuth: () => Promise<void>;
@@ -56,15 +56,18 @@ export const useAuthStore = create<AuthStore>()(
         });
       },
 
-      login: async (email: string, password: string, captchaToken?: string) => {
+      login: async (email: string, password: string, captchaToken?: string, rememberMe = false) => {
         const response = await api.post<{
           user: User;
           accessToken?: string;
+          requires2FA?: boolean;
+          tempToken?: string;
           requiresVerification?: boolean;
           requiresApproval?: boolean;
         }>('/api/auth/login', {
           email,
           password,
+          rememberMe,
           captchaToken,
         });
         const res = response.data;
@@ -75,9 +78,7 @@ export const useAuthStore = create<AuthStore>()(
         }
 
         if (res.requiresApproval) {
-          localStorage.setItem('token', '');
           if (typeof window !== 'undefined') {
-            document.cookie = `token=; path=/; max-age=0`;
             document.cookie = `user=${encodeURIComponent(JSON.stringify(res.user))}; path=/; max-age=604800`;
           }
           set({
@@ -89,10 +90,13 @@ export const useAuthStore = create<AuthStore>()(
           throw new Error('ACCOUNT_PENDING_APPROVAL');
         }
 
-        if (res.accessToken) {
-          localStorage.setItem('token', res.accessToken);
+        if (res.requires2FA && res.tempToken) {
+          localStorage.setItem('2fa_temp', res.tempToken);
+          throw new Error('TWO_FACTOR_REQUIRED');
+        }
+
+        if (res.user) {
           if (typeof window !== 'undefined') {
-            document.cookie = `token=${res.accessToken}; path=/; max-age=604800`;
             document.cookie = `user=${encodeURIComponent(JSON.stringify(res.user))}; path=/; max-age=604800`;
           }
           set({
@@ -110,21 +114,25 @@ export const useAuthStore = create<AuthStore>()(
           accessToken?: string;
           requiresVerification?: boolean;
           userId?: string;
+          devOtp?: string;
         }>('/api/auth/register', data);
         const res = response.data;
 
         if (res.requiresVerification || res.userId) {
           localStorage.setItem('pending_email', data.email);
           localStorage.setItem('pending_user_id', res.userId || '');
+          if (res.devOtp) {
+            localStorage.setItem('pending_otp', res.devOtp);
+          } else {
+            localStorage.removeItem('pending_otp');
+          }
           throw new Error('EMAIL_VERIFICATION_REQUIRED');
         }
 
         if (res.accessToken && res.user) {
-          localStorage.setItem('token', res.accessToken);
           localStorage.setItem('user', JSON.stringify(res.user));
 
           if (typeof window !== 'undefined') {
-            document.cookie = `token=${res.accessToken}; path=/; max-age=604800`;
             document.cookie = `user=${encodeURIComponent(JSON.stringify(res.user))}; path=/; max-age=604800`;
           }
 
@@ -134,7 +142,10 @@ export const useAuthStore = create<AuthStore>()(
             role: res.user.role,
             _hasHydrated: true,
           });
+          return;
         }
+
+        throw new Error('REGISTER_INCOMPLETE');
       },
 
       logout: async () => {
@@ -142,10 +153,8 @@ export const useAuthStore = create<AuthStore>()(
           await api.post('/api/auth/logout');
         } catch {
         } finally {
-          localStorage.removeItem('token');
           localStorage.removeItem('user');
           
-          document.cookie = 'token=; path=/; max-age=0';
           document.cookie = 'user=; path=/; max-age=0';
           
           set({
@@ -160,23 +169,15 @@ export const useAuthStore = create<AuthStore>()(
       },
 
       checkAuth: async () => {
-        const token = localStorage.getItem('token');
-        if (!token) {
-          set({ user: null, isLoggedIn: false, role: null });
-          return;
-        }
         try {
           const response = await api.get<User>('/api/auth/me');
           const user = response.data;
           if (user) {
-            document.cookie = `token=${token}; path=/; max-age=604800`;
             document.cookie = `user=${encodeURIComponent(JSON.stringify(user))}; path=/; max-age=604800`;
             set({ user, isLoggedIn: true, role: user.role });
           }
         } catch {
-          localStorage.removeItem('token');
           localStorage.removeItem('user');
-          document.cookie = 'token=; path=/; max-age=0';
           document.cookie = 'user=; path=/; max-age=0';
           set({ user: null, isLoggedIn: false, role: null });
         }

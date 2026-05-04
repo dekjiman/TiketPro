@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { authenticate } from './auth.js';
 import crypto from 'crypto';
+import { decryptQrPayload, verifyQrSignature, AppError } from '../lib/qr.js';
 
 const prisma = new PrismaClient();
 
@@ -12,9 +13,15 @@ const inviteSchema = z.object({
 });
 
 const INVITE_EXPIRY_DAYS = 7;
+const SCAN_RATE_LIMIT_MS = 750;
 
-function generateInviteToken(email: string, eoId: string): string {
-  const data = `${email}:${eoId}:${Date.now()}`;
+const scanValidateSchema = z.object({
+  gateId: z.string().min(1),
+  qrEncrypted: z.string().min(10),
+});
+
+function generateInviteToken(inviteId: string): string {
+  const data = `invite:${inviteId}`;
   return crypto.createHmac('sha256', process.env.JWT_SECRET || 'secret').update(data).digest('hex').slice(0, 32);
 }
 
@@ -24,6 +31,22 @@ function generateEmailHash(email: string): string {
 
 export async function eoRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', authenticate);
+
+  const resolveEoId = async (user: any): Promise<string | null> => {
+    if (user.role === 'EO_ADMIN') {
+      const eoProfile = await (prisma as any).eoProfile.findUnique({ where: { userId: user.id } });
+      return eoProfile?.id || null;
+    }
+    if (user.role === 'EO_STAFF') {
+      const invite = await (prisma as any).staffInvite.findFirst({
+        where: { email: user.email?.toLowerCase(), status: 'ACCEPTED' },
+        orderBy: { createdAt: 'desc' },
+        select: { eoId: true },
+      });
+      return invite?.eoId || null;
+    }
+    return null;
+  };
 
   fastify.post('/invite-staff', async (req: FastifyRequest, reply: FastifyReply) => {
     const user = (req as any).user;
@@ -50,7 +73,6 @@ export async function eoRoutes(fastify: FastifyInstance) {
       return reply.code(400).send({ error: 'Invite already sent to this email', code: 'INVITE_EXISTS' });
     }
 
-    const token = generateInviteToken(email, eoProfile.id);
     const emailHash = generateEmailHash(email);
     const expiresAt = new Date(Date.now() + INVITE_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
 
@@ -64,19 +86,18 @@ export async function eoRoutes(fastify: FastifyInstance) {
         expiresAt,
       },
     });
+    const token = generateInviteToken(invite.id);
 
-    const inviteUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/register?invite=${token}&eoId=${eoProfile.id}`;
-
-    const emailBody = message
-      ? `${message}\n\nInvite link: ${inviteUrl}`
-      : `Anda diundang untuk bergabung sebagai Staff di ${eoProfile.companyName}.\n\nKlik link berikut untuk mendaftar: ${inviteUrl}\n\nLink berlaku selama ${INVITE_EXPIRY_DAYS} hari.`;
+    const inviteUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/register?invite=${token}&eoId=${eoProfile.id}&email=${encodeURIComponent(email)}`;
 
     try {
-      const { sendEmail } = await import('../services/email.js');
-      await sendEmail({
+      const { sendStaffInviteEmail } = await import('../services/email.js');
+      await sendStaffInviteEmail({
         to: email,
-        subject: `Undangan Staff - ${eoProfile.companyName}`,
-        html: `<p>${emailBody.replace(/\n/g, '<br>')}</p>`,
+        companyName: eoProfile.companyName,
+        inviteUrl,
+        message,
+        expiresInDays: INVITE_EXPIRY_DAYS,
       });
     } catch (emailError) {
       console.error('[EMAIL] Failed to send invite email:', emailError);
@@ -154,15 +175,15 @@ export async function eoRoutes(fastify: FastifyInstance) {
       return reply.code(403).send({ error: 'Access denied' });
     }
 
-    const eoProfile = await (prisma as any).eoProfile.findUnique({ where: { userId: user.id } });
-    if (!eoProfile) {
+    const eoId = await resolveEoId(user);
+    if (!eoId) {
       return { data: [], meta: { total: 0, page: 1, limit: 20, totalPages: 0 } };
     }
 
     const { status, search, page = 1, limit = 20 } = req.query as any;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const where: any = { eoId: eoProfile.id };
+    const where: any = { eoId };
     if (status) where.status = status;
     if (search) {
       where.OR = [
@@ -178,6 +199,12 @@ export async function eoRoutes(fastify: FastifyInstance) {
           id: true, title: true, slug: true, posterUrl: true, bannerUrl: true,
           status: true, startDate: true, endDate: true, city: true, province: true,
           isMultiDay: true, createdAt: true,
+          categories: {
+            select: {
+              id: true,
+              isInternal: true,
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -189,6 +216,277 @@ export async function eoRoutes(fastify: FastifyInstance) {
     return {
       data: events,
       meta: { total, page: parseInt(page), limit: parseInt(limit), totalPages: Math.ceil(total / parseInt(limit)) },
+    };
+  });
+
+  fastify.post('/invites/:id/resend', async (req: FastifyRequest, reply: FastifyReply) => {
+    const user = (req as any).user;
+    const { id } = req.params as { id: string };
+
+    if (user.role !== 'EO_ADMIN') {
+      return reply.code(403).send({ error: 'Only EO Admin can resend invites' });
+    }
+
+    const eoProfile = await (prisma as any).eoProfile.findUnique({ where: { userId: user.id } });
+    if (!eoProfile) {
+      return reply.code(400).send({ error: 'EO Profile not found', code: 'EO_PROFILE_NOT_FOUND' });
+    }
+
+    const invite = await (prisma as any).staffInvite.findFirst({
+      where: { id, eoId: eoProfile.id },
+    });
+    if (!invite) {
+      return reply.code(404).send({ error: 'Invite not found' });
+    }
+
+    if (invite.status !== 'PENDING') {
+      return reply.code(400).send({ error: 'Invite is not pending', code: 'INVITE_NOT_PENDING' });
+    }
+
+    if (invite.expiresAt < new Date()) {
+      await (prisma as any).staffInvite.update({
+        where: { id: invite.id },
+        data: { status: 'EXPIRED' },
+      });
+      return reply.code(400).send({ error: 'Invite has expired', code: 'INVITE_EXPIRED' });
+    }
+
+    const token = generateInviteToken(invite.id);
+    const inviteUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/register?invite=${token}&eoId=${eoProfile.id}&email=${encodeURIComponent(invite.email)}`;
+
+    try {
+      const { sendStaffInviteEmail } = await import('../services/email.js');
+      await sendStaffInviteEmail({
+        to: invite.email,
+        companyName: eoProfile.companyName,
+        inviteUrl,
+        expiresInDays: INVITE_EXPIRY_DAYS,
+      });
+    } catch (emailError) {
+      console.error('[EMAIL] Failed to resend invite email:', emailError);
+      return reply.code(500).send({ error: 'Failed to send email', code: 'EMAIL_SEND_FAILED' });
+    }
+
+    return { success: true, inviteUrl };
+  });
+
+  fastify.get('/events/:id/gates', async (req: FastifyRequest, reply: FastifyReply) => {
+    const user = (req as any).user;
+    const { id } = req.params as { id: string };
+
+    if (user.role !== 'EO_ADMIN' && user.role !== 'EO_STAFF') {
+      return reply.code(403).send({ error: 'Access denied', code: 'ACCESS_DENIED' });
+    }
+
+    const eoId = await resolveEoId(user);
+    if (!eoId) {
+      return reply.code(403).send({ error: 'Access denied', code: 'ACCESS_DENIED' });
+    }
+
+    const event = await (prisma as any).event.findFirst({
+      where: { id, eoId },
+      select: { id: true, title: true },
+    });
+    if (!event) {
+      return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+    }
+
+    const gates = await (prisma as any).gate.findMany({
+      where: { eventId: event.id, isActive: true },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, name: true, categoryIds: true },
+    });
+
+    return { data: gates };
+  });
+
+  fastify.post('/scanner/validate', async (req: FastifyRequest, reply: FastifyReply) => {
+    const user = (req as any).user;
+    if (user.role !== 'EO_ADMIN' && user.role !== 'EO_STAFF') {
+      return reply.code(403).send({ error: 'Access denied', code: 'ACCESS_DENIED' });
+    }
+
+    // Basic per-user throttling (defense-in-depth; not a replacement for infra rate limiting).
+    const lastKey = `scan:last:${user.id}`;
+    try {
+      const { redis } = await import('../services/redis.js');
+      const now = Date.now();
+      const last = await redis.get(lastKey);
+      if (last && now - parseInt(last) < SCAN_RATE_LIMIT_MS) {
+        return reply.code(429).send({ error: 'Terlalu cepat. Coba lagi sebentar.', code: 'RATE_LIMITED' });
+      }
+      await redis.setex(lastKey, 10, String(now));
+    } catch {
+      // If Redis is unavailable, continue without throttling (avoid blocking scanning).
+    }
+
+    const parsed = scanValidateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid request', code: 'INVALID_REQUEST', details: parsed.error.flatten() });
+    }
+
+    const { gateId, qrEncrypted } = parsed.data;
+
+    const eoId = await resolveEoId(user);
+    if (!eoId) {
+      return reply.code(403).send({ error: 'Access denied', code: 'ACCESS_DENIED' });
+    }
+
+    const gate = await (prisma as any).gate.findFirst({
+      where: { id: gateId, isActive: true, event: { eoId } },
+      select: {
+        id: true,
+        eventId: true,
+        categoryIds: true,
+        event: { select: { id: true, title: true } },
+      },
+    });
+
+    if (!gate) {
+      return reply.code(404).send({ error: 'Gate not found', code: 'GATE_NOT_FOUND' });
+    }
+
+    let qrPayload: any;
+    try {
+      qrPayload = decryptQrPayload(qrEncrypted);
+    } catch (err) {
+      const code = err instanceof AppError ? err.code : 'INVALID_QR';
+      const status = err instanceof AppError ? err.httpStatus : 400;
+      return reply.code(status).send({ valid: false, reason: code, error: 'QR code tidak valid', code });
+    }
+
+    if (!verifyQrSignature(qrPayload)) {
+      return reply.code(400).send({ valid: false, reason: 'TAMPERED_QR', code: 'TAMPERED_QR', error: 'QR code tidak valid' });
+    }
+
+    if (qrPayload.eid !== gate.eventId) {
+      return reply.code(400).send({ valid: false, reason: 'WRONG_EVENT', code: 'WRONG_EVENT', error: 'QR bukan untuk event ini' });
+    }
+
+    const ticket = await (prisma as any).ticket.findFirst({
+      where: { id: qrPayload.tid },
+      include: {
+        category: { select: { id: true, name: true, colorHex: true } },
+        order: { select: { eventId: true } },
+      },
+    });
+
+    if (!ticket || ticket.order?.eventId !== gate.eventId) {
+      return reply.code(404).send({ valid: false, reason: 'TICKET_NOT_FOUND', code: 'TICKET_NOT_FOUND', error: 'Ticket tidak ditemukan' });
+    }
+
+    if (ticket.status === 'CHECKIN') {
+      return reply.code(400).send({
+        valid: false,
+        reason: 'ALREADY_USED',
+        code: 'ALREADY_USED',
+        error: 'Ticket sudah digunakan',
+        detail: { usedAt: ticket.usedAt?.toISOString() },
+      });
+    }
+
+    if (ticket.status === 'REFUNDED') {
+      return reply.code(400).send({ valid: false, reason: 'TICKET_REFUNDED', code: 'TICKET_REFUNDED', error: 'Ticket refund' });
+    }
+
+    if (ticket.status === 'CANCELLED') {
+      return reply.code(400).send({ valid: false, reason: 'TICKET_CANCELLED', code: 'TICKET_CANCELLED', error: 'Ticket dibatalkan' });
+    }
+
+    if (ticket.status !== 'ACTIVE') {
+      return reply.code(400).send({ valid: false, reason: 'TICKET_INACTIVE', code: 'TICKET_INACTIVE', error: 'Ticket tidak aktif' });
+    }
+
+    if (!gate.categoryIds.includes(ticket.categoryId)) {
+      return reply.code(400).send({
+        valid: false,
+        reason: 'WRONG_GATE',
+        code: 'WRONG_GATE',
+        error: 'Gate tidak sesuai kategori ticket',
+      });
+    }
+
+    // Atomic consume to avoid double-scan race.
+    const usedAt = new Date();
+    const [updateResult] = await (prisma as any).$transaction([
+      (prisma as any).ticket.updateMany({
+        where: { id: ticket.id, status: 'ACTIVE', usedAt: null },
+        data: { status: 'CHECKIN', usedAt, usedGateId: gate.id },
+      }),
+      (prisma as any).scanLog.create({
+        data: { ticketId: ticket.id, gateId: gate.id, staffId: user.id, result: 'SUCCESS' },
+      }),
+    ]);
+
+    if (!updateResult || updateResult.count !== 1) {
+      return reply.code(409).send({ valid: false, reason: 'CONFLICT', code: 'CONFLICT', error: 'Ticket sudah diproses oleh device lain' });
+    }
+
+    return reply.send({
+      valid: true,
+      ticket: {
+        holderName: ticket.holderName,
+        categoryName: ticket.category?.name || '',
+        categoryColor: ticket.category?.colorHex || undefined,
+        isInternal: !!ticket.isInternal,
+        ticketCode: ticket.ticketCode,
+        eventTitle: gate.event?.title || '',
+        usedAt: usedAt.toISOString(),
+      },
+    });
+  });
+
+  fastify.get('/dashboard/overview', async (req: FastifyRequest, reply: FastifyReply) => {
+    const user = (req as any).user;
+    if (user.role !== 'EO_ADMIN' && user.role !== 'EO_STAFF') {
+      return reply.code(403).send({ error: 'Access denied' });
+    }
+
+    const eoId = await resolveEoId(user);
+    if (!eoId) {
+      return {
+        totalEvents: 0,
+        totalSold: 0,
+        totalRevenue: 0,
+        totalPaidOrders: 0,
+        totalCheckIn: 0,
+      };
+    }
+
+    const [totalEvents, itemsAgg, totalPaidOrders, totalCheckIn] = await Promise.all([
+      (prisma as any).event.count({ where: { eoId } }),
+      (prisma as any).orderItem.aggregate({
+        where: {
+          order: {
+            event: { eoId },
+            status: { in: ['PAID', 'FULFILLED'] },
+          },
+        },
+        _sum: {
+          quantity: true,
+          subtotal: true,
+        },
+      }),
+      (prisma as any).order.count({
+        where: {
+          event: { eoId },
+          status: { in: ['PAID', 'FULFILLED'] },
+        },
+      }),
+      (prisma as any).ticket.count({
+        where: {
+          Event: { eoId },
+          usedAt: { not: null },
+        },
+      }),
+    ]);
+
+    return {
+      totalEvents,
+      totalSold: Number(itemsAgg?._sum?.quantity || 0),
+      totalRevenue: Number(itemsAgg?._sum?.subtotal || 0),
+      totalPaidOrders,
+      totalCheckIn,
     };
   });
 
@@ -248,7 +546,8 @@ export async function eoRoutes(fastify: FastifyInstance) {
   fastify.get('/events/:id/dashboard/recent-orders', async (req: FastifyRequest, reply: FastifyReply) => {
     const user = (req as any).user;
     const { id } = req.params as { id: string };
-    const limit = parseInt(req.query.limit as string) || 20;
+    const query = req.query as any;
+    const limit = parseInt(query?.limit as string) || 20;
 
     if (user.role !== 'EO_ADMIN' && user.role !== 'EO_STAFF') {
       return reply.code(403).send({ error: 'Access denied' });
@@ -299,15 +598,23 @@ export async function eoRoutes(fastify: FastifyInstance) {
       return reply.code(403).send({ error: 'Access denied' });
     }
 
-    const eoProfile = await (prisma as any).eoProfile.findUnique({ where: { userId: user.id } });
-    const targetEoId = user.role === 'EO_ADMIN' ? eoProfile?.id : (req.query as any).eoId;
+    const targetEoId = await resolveEoId(user);
 
     if (!targetEoId) {
       return reply.code(400).send({ error: 'EO Profile not found', code: 'EO_PROFILE_NOT_FOUND' });
     }
 
+    const acceptedInvites = await (prisma as any).staffInvite.findMany({
+      where: { eoId: targetEoId, status: 'ACCEPTED' },
+      select: { email: true },
+    });
+
+    const staffEmails = acceptedInvites.map((inv: any) => inv.email?.toLowerCase()).filter(Boolean);
     const staffUsers = await (prisma as any).user.findMany({
-      where: { invitedBy: user.id, role: 'EO_STAFF' },
+      where: {
+        role: 'EO_STAFF',
+        email: { in: staffEmails },
+      },
     });
 
     return { data: staffUsers };
@@ -325,20 +632,18 @@ export async function eoRoutes(fastify: FastifyInstance) {
     }
 
     try {
+      const targetEoId = await resolveEoId(user);
+      if (!targetEoId) {
+        return reply.code(404).send({ error: 'EO Profile not found', code: 'EO_PROFILE_NOT_FOUND' });
+      }
+
       const eoProfile = await (prisma as any).eoProfile.findUnique({
-        where: { userId: user.id },
+        where: { id: targetEoId },
         include: { user: { select: { id: true, name: true, email: true, phone: true, avatar: true } } },
       });
 
       if (!eoProfile) {
-        return { data: {
-          id: null,
-          companyName: '',
-          bankName: '',
-          bankAccount: '',
-          commission: 0.05,
-          user: { id: user.id, name: user.name, email: user.email, phone: user.phone, avatar: user.avatar },
-        }};
+        return reply.code(404).send({ error: 'EO Profile not found', code: 'EO_PROFILE_NOT_FOUND' });
       }
 
       return { data: eoProfile };

@@ -99,9 +99,9 @@ export function OtpInput({
             disabled={loading}
             className={`
               w-12 h-14 text-center text-xl font-bold rounded-lg border-2 transition-all
-              focus:outline-none focus:ring-2 focus:ring-[#065F46]/50 focus:border-[#065F46]
+              focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-600
               ${error ? 'border-red-500 bg-red-50 dark:bg-red-900/20' : 'border-slate-300 dark:border-slate-600'}
-              ${digit ? 'border-[#065F46] bg-emerald-50 dark:bg-emerald-900/20' : ''}
+              ${digit ? 'border-emerald-600 bg-emerald-50 dark:bg-emerald-900/20' : ''}
               bg-white dark:bg-slate-800
             `}
           />
@@ -122,7 +122,7 @@ export function OtpInput({
             type="button"
             onClick={handleResend}
             disabled={loading}
-            className="text-sm text-[#065F46] hover:underline disabled:opacity-50"
+            className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline disabled:opacity-50"
           >
             Kirim ulang kode
           </button>

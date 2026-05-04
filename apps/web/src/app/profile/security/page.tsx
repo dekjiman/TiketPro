@@ -37,7 +37,7 @@ export default function SecurityPage() {
     setError('');
     try {
       const res = await api.post<TwoFASetup>('/api/auth/2fa/setup');
-      setSetupData(res);
+      setSetupData(res.data);
       setStep('activate');
     } catch (err) {
       setError(getApiError(err).error);
@@ -57,7 +57,7 @@ export default function SecurityPage() {
         code,
         password,
       });
-      setBackupCodes(res.backupCodes);
+      setBackupCodes(res.data.backupCodes);
       if (user) setUser({ ...user, twoFAEnabled: true });
       toast.showToast('success', '2FA berhasil diaktifkan');
     } catch (err) {
@@ -74,7 +74,7 @@ export default function SecurityPage() {
     setLoading(true);
     setError('');
     try {
-      await api.delete('/api/auth/2fa', { password: disablePassword });
+      await api.delete('/api/auth/2fa', { data: { password: disablePassword } });
       if (user) setUser({ ...user, twoFAEnabled: false });
       setStep('list');
       toast.showToast('success', '2FA dinonaktifkan');
@@ -116,7 +116,7 @@ export default function SecurityPage() {
   if (step === 'activate' && setupData) {
     return (
       <div className="max-w-md mx-auto py-8">
-        <Link href="/profile/security" onClick={() => setStep('list')} className="text-sm text-slate-500 hover:text-[#065F46]">
+        <Link href="/profile/security" onClick={() => setStep('list')} className="text-sm text-slate-500 hover:text-emerald-700 dark:hover:text-emerald-400">
           ← Kembali
         </Link>
         <h1 className="text-2xl font-bold mt-2 mb-4" style={{ fontFamily: 'Manrope' }}>
@@ -161,7 +161,7 @@ export default function SecurityPage() {
     <div className="max-w-md mx-auto py-8">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <Link href="/profile" className="text-sm text-slate-500 hover:text-[#065F46]">
+          <Link href="/profile" className="text-sm text-slate-500 hover:text-emerald-700 dark:hover:text-emerald-400">
             ← Kembali ke Profil
           </Link>
           <h1 className="text-2xl font-bold mt-2" style={{ fontFamily: 'Manrope' }}>

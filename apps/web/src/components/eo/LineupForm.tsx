@@ -173,7 +173,23 @@ export function LineupForm({ initialData, eventId, onUpdate }: LineupFormProps) 
       {/* Save button when there are items */}
       {sortedLineups.length > 0 && (
         <div className="flex justify-end pt-4 border-t border-slate-200 dark:border-slate-700">
-          <Button onClick={handleSave} disabled={saving} className="bg-purple-600 hover:bg-purple-700">
+          <Button onClick={async () => {
+            setSaving(true);
+            try {
+              // Save lineup order
+              await Promise.all(sortedLineups.map((lineup, index) =>
+                api.patch(`/api/events/${eventId}/lineup/${lineup.id}`, {
+                  orderIndex: index,
+                  dayIndex: lineup.dayIndex || 0
+                })
+              ));
+              toast.showToast('success', 'Lineup berhasil disimpan');
+            } catch (err) {
+              toast.showToast('error', getApiError(err).error);
+            } finally {
+              setSaving(false);
+            }
+          }} disabled={saving} className="bg-purple-600 hover:bg-purple-700">
             {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
             Simpan Lineup
           </Button>
@@ -197,6 +213,7 @@ export function LineupForm({ initialData, eventId, onUpdate }: LineupFormProps) 
               onSave={handleSave}
               onCancel={() => { setShowForm(false); setEditingItem(null); }}
               loading={saving}
+              eventId={eventId}
             />
           </div>
         </div>
@@ -237,19 +254,9 @@ function EmptyExample({ onAdd }: { onAdd: () => void }) {
           </div>
         </div>
       </div>
-      <div className="px-6 py-4 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-700">
-        <Button onClick={() => {
-          const nextIndex = sortedLineups.length;
-          setEditingItem({
-            artistName: '',
-            role: 'HEADLINER',
-            dayIndex: 1,
-            orderIndex: nextIndex,
-            photoUrl: '',
-            description: '',
-            socialLinks: {},
-          });
-          setShowForm(true);
+       <div className="px-6 py-4 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-700">
+       <Button onClick={() => {
+          onAdd();
         }}>
           <Plus className="w-4 h-4 mr-2" />
           Tambah Artis Pertama
@@ -310,9 +317,11 @@ interface LineupFormInlineProps {
   onSave: (fd: { artistName: string; role: LineupRole; dayIndex: number; orderIndex: number; description?: string; photoUrl?: string; socialLinks?: SocialLinks }) => void;
   onCancel: () => void;
   loading: boolean;
+  eventId: string;
 }
 
-function LineupFormInline({ item, onSave, onCancel, loading }: LineupFormInlineProps) {
+function LineupFormInline({ item, onSave, onCancel, loading, eventId }: LineupFormInlineProps) {
+  const toast = useToast();
   const [form, setForm] = useState<{
     artistName: string;
     role: LineupRole;

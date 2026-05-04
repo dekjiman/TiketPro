@@ -64,7 +64,7 @@ export async function decrStock(
       remaining: parseInt(remaining),
     };
   } catch (error) {
-    await handleRedisError('decrStock', categoryId, error);
+    return await handleRedisError('decrStock', categoryId, error);
   }
 }
 
@@ -90,7 +90,7 @@ export async function incrStock(categoryId: string, quantity: number): Promise<n
     await redis.set(key, newValue);
     return newValue;
   } catch (error) {
-    await handleRedisError('incrStock', categoryId, error);
+    return await handleRedisError('incrStock', categoryId, error);
   }
 }
 
@@ -100,7 +100,7 @@ export async function getStock(categoryId: string): Promise<number> {
     const value = await redis.get(key);
     return value ? parseInt(value) : -1;
   } catch (error) {
-    await handleRedisError('getStock', categoryId, error);
+    return await handleRedisError('getStock', categoryId, error);
   }
 }
 

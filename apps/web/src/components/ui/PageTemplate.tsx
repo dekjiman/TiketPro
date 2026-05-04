@@ -56,7 +56,7 @@ export function PageLayout({ title, loading, error, onRetry, children }: PageLay
           <div className="flex items-center justify-between">
             <p className="text-red-600 dark:text-red-400 text-sm">{error}</p>
             {onRetry && (
-              <button onClick={onRetry} className="text-sm text-[#065F46] hover:underline ml-4">
+              <button onClick={onRetry} className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline ml-4">
                 Retry
               </button>
             )}
@@ -72,9 +72,9 @@ export function PageLayout({ title, loading, error, onRetry, children }: PageLay
 export function PageSkeleton() {
   return (
     <div className="space-y-4">
-      <div className="h-8 w-32 bg-slate-200 rounded animate-pulse" />
-      <div className="h-24 bg-slate-200 rounded animate-pulse" />
-      <div className="h-24 bg-slate-200 rounded animate-pulse" />
+      <div className="h-8 w-32 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
+      <div className="h-24 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
+      <div className="h-24 bg-slate-200 dark:bg-slate-800 rounded animate-pulse" />
     </div>
   );
 }
@@ -86,8 +86,8 @@ interface FormSectionProps {
 
 export function FormSection({ title, children }: FormSectionProps) {
   return (
-    <section className="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-6">
-      <h2 className="text-lg font-semibold mb-4">{title}</h2>
+    <section className="bg-[var(--surface)] rounded-lg border border-[var(--border)] p-6">
+      <h2 className="text-lg font-semibold text-[var(--text)] mb-4">{title}</h2>
       {children}
     </section>
   );
@@ -106,6 +106,7 @@ export function FormActions({
   loading, 
   onSubmit, 
   submitLabel = 'Simpan',
+  cancelLabel = 'Batal',
   onCancel,
   variant = 'primary'
 }: FormActionsProps) {

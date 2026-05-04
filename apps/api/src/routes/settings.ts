@@ -1,6 +1,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
+import path from 'path';
+import fs from 'fs/promises';
+import sharp from 'sharp';
 import { authenticate } from './auth.js';
 
 const prisma = new PrismaClient();
@@ -90,6 +93,49 @@ export async function settingsRoutes(fastify: FastifyInstance) {
     );
 
     return { data: results };
+  });
+
+  fastify.post('/upload/logo', async (req: FastifyRequest, reply: FastifyReply) => {
+    const user = (req as any).user;
+    if (user.role !== 'SUPER_ADMIN') {
+      return reply.code(403).send({ error: 'Access denied' });
+    }
+
+    const file = await req.file();
+    if (!file) {
+      return reply.code(400).send({ error: 'No file uploaded', code: 'NO_FILE' });
+    }
+
+    const allowedMimeTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml']);
+    if (!allowedMimeTypes.has(file.mimetype)) {
+      return reply.code(400).send({ error: 'Invalid file type', code: 'INVALID_FILE_TYPE' });
+    }
+
+    const uploadDir = path.join(process.cwd(), 'public/uploads');
+    await fs.mkdir(uploadDir, { recursive: true });
+
+    const extension = file.mimetype === 'image/svg+xml' ? 'svg' : 'webp';
+    const fileName = `site-logo-${Date.now()}.${extension}`;
+    const filePath = path.join(uploadDir, fileName);
+
+    if (file.mimetype === 'image/svg+xml') {
+      await fs.writeFile(filePath, await file.toBuffer());
+    } else {
+      const buffer = await file.toBuffer();
+      await sharp(buffer)
+        .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
+        .webp({ quality: 90 })
+        .toFile(filePath);
+    }
+
+    const logoUrl = `/public/uploads/${fileName}`;
+    const setting = await (prisma as any).settings.upsert({
+      where: { key: 'site_logo' },
+      update: { value: logoUrl, category: 'general' },
+      create: { key: 'site_logo', value: logoUrl, category: 'general' },
+    });
+
+    return { data: setting, url: logoUrl };
   });
 
   fastify.get('/categories', async (req: FastifyRequest, reply: FastifyReply) => {

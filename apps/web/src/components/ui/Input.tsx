@@ -16,7 +16,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
     return (
       <div className="w-full">
         {label && (
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5">
+          <label className="block text-sm font-medium text-[var(--text)] mb-1.5">
             {label}
           </label>
         )}
@@ -25,11 +25,11 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             ref={ref}
             type={isPassword && showPassword ? 'text' : type}
             className={`
-              w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#065F46]/50 focus:border-[#065F46] focus:outline-none transition
-              bg-white dark:bg-slate-800
-              text-slate-900 dark:text-slate-100
-              placeholder:text-slate-400 dark:placeholder:text-slate-500
-              ${error ? 'border-red-500' : 'border-slate-300 dark:border-slate-600'}
+              w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-600 focus:outline-none transition
+              bg-[var(--surface)]
+              text-[var(--text)]
+              placeholder:text-[var(--muted)]
+              ${error ? 'border-red-500' : 'border-[var(--border)]'}
               ${className}
             `}
             {...props}
@@ -38,7 +38,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--muted)] hover:text-[var(--text)]"
             >
               {showPassword ? (
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -54,7 +54,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           )}
         </div>
         {error && <p className="mt-1.5 text-sm text-red-500">{error}</p>}
-        {hint && !error && <p className="mt-1.5 text-sm text-slate-500">{hint}</p>}
+        {hint && !error && <p className="mt-1.5 text-sm text-[var(--muted)]">{hint}</p>}
       </div>
     );
   }
@@ -72,19 +72,19 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
     return (
       <div className="w-full">
         {label && (
-          <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5">
+          <label className="block text-sm font-medium text-[var(--text)] mb-1.5">
             {label}
           </label>
         )}
         <textarea
           ref={ref}
           className={`
-            w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#065F46]/50 focus:border-[#065F46] focus:outline-none transition
-            bg-white dark:bg-slate-800
-            text-slate-900 dark:text-slate-100
-            placeholder:text-slate-400 dark:placeholder:text-slate-500
+            w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-600 focus:outline-none transition
+            bg-[var(--surface)]
+            text-[var(--text)]
+            placeholder:text-[var(--muted)]
             resize-none
-            ${error ? 'border-red-500' : 'border-slate-300 dark:border-slate-600'}
+            ${error ? 'border-red-500' : 'border-[var(--border)]'}
             ${className}
           `}
           {...props}

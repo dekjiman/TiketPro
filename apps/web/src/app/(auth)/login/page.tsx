@@ -8,6 +8,7 @@ import { Button, Input, useToast } from '@/components/ui';
 import { useAuthStore } from '@/store/authStore';
 import { validateEmail, validatePassword } from '@/lib/validation';
 import { Turnstile } from '@marsidev/react-turnstile';
+import { API_URL } from '@/lib/api';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -50,7 +51,7 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await login(email, password, captchaToken);
+      await login(email, password, captchaToken, rememberMe);
       
       const currentUser = useAuthStore.getState().user;
       
@@ -78,6 +79,8 @@ export default function LoginPage() {
     } catch (err: any) {
       if (err.message === 'EMAIL_VERIFICATION_REQUIRED') {
         router.push(`/verify-email?email=${encodeURIComponent(email)}`);
+      } else if (err.message === 'TWO_FACTOR_REQUIRED') {
+        router.push('/login/2fa');
       } else if (err.message === 'ACCOUNT_PENDING_APPROVAL') {
         router.push('/auth/pending-approval');
       } else if (err.message === 'ACCOUNT_SUSPENDED') {
@@ -94,8 +97,6 @@ export default function LoginPage() {
           router.push('/auth/suspended');
         } else if (apiError.code === 'ACCOUNT_BANNED') {
           router.push('/auth/suspended');
-        } else if (apiError.code === 'USER_NOT_FOUND') {
-          setServerError('Akun dengan email ini belum terdaftar. Silakan daftar terlebih dahulu.');
         } else if (apiError.code === 'INVALID_CREDENTIALS') {
           setServerError('Email atau password salah.');
         } else {
@@ -109,7 +110,7 @@ export default function LoginPage() {
 
   const handleGoogleLogin = () => {
     setGoogleLoading(true);
-    window.location.href = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000'}/api/auth/google?redirect=${encodeURIComponent(redirect)}`;
+    window.location.href = `${API_URL}/api/auth/google?redirect=${encodeURIComponent(redirect)}`;
   };
 
   return (
@@ -152,7 +153,6 @@ export default function LoginPage() {
           <Turnstile
             siteKey="1x00000000000000000000AA"
             onSuccess={(token) => setCaptchaToken(token)}
-            theme="light"
             options={{
               size: 'normal',
             }}
@@ -165,11 +165,11 @@ export default function LoginPage() {
               type="checkbox"
               checked={rememberMe}
               onChange={(e) => setRememberMe(e.target.checked)}
-              className="w-4 h-4 rounded border-slate-300 text-[#065F46] focus:ring-[#065F46]"
+              className="w-4 h-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
             />
             <span className="text-sm text-slate-600 dark:text-slate-300">Ingat saya</span>
           </label>
-          <Link href="/forgot-password" className="text-sm text-[#065F46] hover:underline">
+          <Link href="/forgot-password" className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline">
             Lupa password?
           </Link>
         </div>
@@ -215,7 +215,7 @@ export default function LoginPage() {
 
         <p className="text-center text-sm text-slate-600 dark:text-slate-300">
           Belum punya akun?{' '}
-          <Link href="/register" className="font-semibold text-[#065F46] hover:underline">
+          <Link href="/register" className="font-semibold text-emerald-700 dark:text-emerald-400 hover:underline">
             Daftar
           </Link>
         </p>

@@ -67,9 +67,16 @@ function RegisterForm() {
       }
       
       await register(registerData);
-      router.push(redirect);
+      const currentUser = useAuthStore.getState().user;
+      if (currentUser) {
+        router.push(redirect);
+      } else {
+        router.push(`/verify-email?email=${encodeURIComponent(email)}&redirect=${encodeURIComponent(redirect)}`);
+      }
     } catch (err: any) {
       if (err.message === 'EMAIL_VERIFICATION_REQUIRED') {
+        router.push(`/verify-email?email=${encodeURIComponent(email)}&redirect=${encodeURIComponent(redirect)}`);
+      } else if (err.message === 'REGISTER_INCOMPLETE') {
         router.push(`/verify-email?email=${encodeURIComponent(email)}&redirect=${encodeURIComponent(redirect)}`);
       } else {
         setServerError(getApiError(err).error);
@@ -188,7 +195,7 @@ function RegisterForm() {
             <select
               value={role}
               onChange={(e) => setRole(e.target.value as UserRole)}
-              className="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#065F46]/50 focus:border-[#065F46] outline-none transition"
+              className="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-600 outline-none transition"
             >
               {ROLE_OPTIONS.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -210,7 +217,7 @@ function RegisterForm() {
 
         <p className="text-center text-sm text-slate-600 dark:text-slate-300">
           Sudah punya akun?{' '}
-          <Link href="/login" className="font-semibold text-[#065F46] hover:underline">
+          <Link href="/login" className="font-semibold text-emerald-700 dark:text-emerald-400 hover:underline">
             Masuk
           </Link>
         </p>
@@ -223,7 +230,7 @@ export default function RegisterPage() {
   return (
     <Suspense fallback={
       <div className="flex items-center justify-center py-8">
-        <div className="w-8 h-8 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+        <div className="w-8 h-8 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
       </div>
     }>
       <RegisterForm />

@@ -30,17 +30,17 @@ const icons = {
 };
 
 const colors = {
-  success: 'bg-emerald-50 border-emerald-200 text-emerald-800',
-  error: 'bg-red-50 border-red-200 text-red-800',
-  info: 'bg-blue-50 border-blue-200 text-blue-800',
-  warning: 'bg-amber-50 border-amber-200 text-amber-800',
+  success: 'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-900/20 dark:border-emerald-800 dark:text-emerald-300',
+  error: 'bg-red-50 border-red-200 text-red-800 dark:bg-red-900/20 dark:border-red-800 dark:text-red-300',
+  info: 'bg-blue-50 border-blue-200 text-blue-800 dark:bg-blue-900/20 dark:border-blue-800 dark:text-blue-300',
+  warning: 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300',
 };
 
 const iconColors = {
-  success: 'text-emerald-500',
-  error: 'text-red-500',
-  info: 'text-blue-500',
-  warning: 'text-amber-500',
+  success: 'text-emerald-500 dark:text-emerald-400',
+  error: 'text-red-500 dark:text-red-400',
+  info: 'text-blue-500 dark:text-blue-400',
+  warning: 'text-amber-500 dark:text-amber-400',
 };
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -61,7 +61,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`flex items-center gap-3 px-4 py-3 rounded-lg border shadow-lg max-w-sm animate-slide-in ${colors[toast.type]}`}
+            className={`flex items-center gap-3 px-4 py-3 rounded-lg border shadow-lg max-w-sm animate-slide-in backdrop-blur-sm ${colors[toast.type]}`}
           >
             <svg className={`w-5 h-5 flex-shrink-0 ${iconColors[toast.type]}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icons[toast.type]} />

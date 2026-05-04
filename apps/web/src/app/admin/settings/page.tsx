@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { api, getApiError } from '@/lib/api';
-import { Button, Input, useToast } from '@/components/ui';
+import { Button, useToast } from '@/components/ui';
 import { useAuthStore } from '@/store/authStore';
 
 interface Setting {
@@ -75,6 +75,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('general');
 
@@ -129,10 +130,29 @@ export default function SettingsPage() {
     setSettings((prev) => ({ ...prev, [key]: value }));
   };
 
+  const handleLogoUpload = async (file: File) => {
+    if (!file || uploadingLogo) return;
+    setUploadingLogo(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await api.post<{ url: string }>('/api/admin/settings/upload/logo', formData);
+      const logoUrl = res.data?.url || '';
+      if (logoUrl) {
+        handleChange('site_logo', logoUrl);
+        toast.showToast('success', 'Logo berhasil diupload');
+      }
+    } catch (err) {
+      toast.showToast('error', getApiError(err).error);
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+
   if (!user || user.role !== 'SUPER_ADMIN') {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+        <div className="w-8 h-8 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -166,7 +186,7 @@ export default function SettingsPage() {
                 onClick={() => setActiveTab(tab)}
                 className={`w-full text-left px-4 py-2 rounded-lg text-sm transition-colors ${
                   activeTab === tab
-                    ? 'bg-[#065F46] text-white'
+                    ? 'bg-emerald-700 dark:bg-emerald-600 text-white'
                     : 'hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
@@ -179,11 +199,44 @@ export default function SettingsPage() {
         <div className="flex-1 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
           {loading ? (
             <div className="flex justify-center py-8">
-              <div className="w-8 h-8 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+              <div className="w-8 h-8 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
             </div>
           ) : (
             <div className="space-y-6">
               <h2 className="text-lg font-semibold">{activeGroup.name}</h2>
+              {activeGroup.name === 'General' && (
+                <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+                  <p className="text-sm font-medium mb-2">Site Logo</p>
+                  <p className="text-xs text-slate-500 mb-3">Upload logo aplikasi (PNG, JPG, WEBP, SVG)</p>
+                  {settings.site_logo ? (
+                    <div className="mb-3">
+                      <img
+                        src={settings.site_logo}
+                        alt="Site logo"
+                        className="h-16 w-auto rounded border border-slate-200 bg-white p-2"
+                      />
+                    </div>
+                  ) : null}
+                  <div className="flex items-center gap-3">
+                    <label className="inline-flex items-center">
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            void handleLogoUpload(file);
+                          }
+                        }}
+                      />
+                      <span className="inline-flex items-center rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium hover:bg-slate-50 dark:border-slate-600 dark:hover:bg-slate-700">
+                        {uploadingLogo ? 'Uploading...' : 'Pilih File Logo'}
+                      </span>
+                    </label>
+                  </div>
+                </div>
+              )}
               <div className="space-y-4">
                 {activeGroup.fields.map((field) => (
                   <div key={field.key}>
@@ -193,7 +246,7 @@ export default function SettingsPage() {
                           type="checkbox"
                           checked={settings[field.key] === 'true'}
                           onChange={(e) => handleChange(field.key, e.target.checked ? 'true' : 'false')}
-                          className="w-5 h-5 rounded border-slate-300 text-[#065F46] focus:ring-[#065F46]"
+                          className="w-5 h-5 rounded border-slate-300 text-emerald-700 dark:text-emerald-400 focus:ring-emerald-600"
                         />
                         <div>
                           <p className="font-medium">{field.label}</p>
@@ -212,7 +265,7 @@ export default function SettingsPage() {
                           value={settings[field.key] || ''}
                           onChange={(e) => handleChange(field.key, e.target.value)}
                           rows={4}
-                          className="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#065F46]/50 focus:border-[#065F46] outline-none transition resize-none"
+                          className="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-600 outline-none transition resize-none"
                         />
                       </div>
                     ) : (
@@ -225,7 +278,7 @@ export default function SettingsPage() {
                           type={field.type === 'number' ? 'number' : 'text'}
                           value={settings[field.key] || ''}
                           onChange={(e) => handleChange(field.key, e.target.value)}
-                          className="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-[#065F46]/50 focus:border-[#065F46] outline-none transition"
+                          className="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-600 outline-none transition"
                         />
                       </div>
                     )}

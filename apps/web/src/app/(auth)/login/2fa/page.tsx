@@ -40,9 +40,8 @@ export default function TwoFactorPage() {
       });
 
       localStorage.removeItem('2fa_temp');
-      localStorage.setItem('token', res.accessToken);
-      localStorage.setItem('user', JSON.stringify(res.user));
-      setUser(res.user);
+      localStorage.setItem('user', JSON.stringify(res.data.user));
+      setUser(res.data.user);
       router.push('/dashboard');
     } catch (err) {
       const apiError = getApiError(err);
@@ -106,7 +105,7 @@ export default function TwoFactorPage() {
               localStorage.removeItem('2fa_temp');
               router.push('/login');
             }}
-            className="text-sm text-[#065F46] hover:underline"
+            className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline"
           >
             Batal dan login ulang
           </button>

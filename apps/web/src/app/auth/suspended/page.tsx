@@ -58,7 +58,7 @@ export default function SuspendedPage() {
               <p className="font-medium text-slate-900 text-sm mb-1">Butuh bantuan?</p>
               <p className="text-sm text-slate-600">
                 Hubungi kami di{' '}
-                <a href="mailto:support@tiketpro.id" className="text-[#065F46] hover:underline">
+                <a href="mailto:support@tiketpro.id" className="text-emerald-700 dark:text-emerald-400 hover:underline">
                   support@tiketpro.id
                 </a>{' '}
                 jika Anda merasa ini adalah kesalahan.

@@ -11,13 +11,19 @@ import { redis } from '../services/redis.js';
 import { env } from '../config/env.js';
 
 const prisma = new PrismaClient();
+const SESSION_COOKIE = 'session_refresh';
+const ACCESS_COOKIE = 'access_token';
+const ACCESS_TTL_SECONDS = 7 * 24 * 60 * 60; // 15 minutes
+const SHORT_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+const REMEMBER_ME_TTL_SECONDS = 7 * 24 * 60 * 60;
+const DUMMY_PASSWORD_HASH = '$argon2id$v=19$m=65536,t=3,p=4$L6xFgaWnlJWevD6z02Nd0Q$P1S2lIgD+yQhWmBrB7wzAQ1r5vVvW5S3zck2Qw4hW8s';
 
 const registerSchema = z.object({
   name: z.string().min(3).max(100),
   email: z.string().email(),
   password: z.string().min(8).regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, 'Password must contain uppercase, lowercase, and number'),
   phone: z.string().regex(/^(\+62|62|0)[0-9]{9,12}$/).optional(),
-  role: z.enum(['CUSTOMER', 'EO_ADMIN', 'AFFILIATE', 'RESELLER']).default('CUSTOMER'),
+  role: z.enum(['CUSTOMER', 'EO_ADMIN', 'EO_STAFF', 'AFFILIATE', 'RESELLER']).optional(),
   referralCode: z.string().optional(),
   inviteToken: z.string().optional(),
   eoId: z.string().optional(),
@@ -38,6 +44,15 @@ const verifyOtpSchema = z.object({
 const verify2faSchema = z.object({
   tempToken: z.string(),
   code: z.string().min(1), // TOTP or backup code
+});
+
+const activate2faSchema = z.object({
+  code: z.string().min(1),
+  password: z.string().min(1),
+});
+
+const disable2faSchema = z.object({
+  password: z.string().min(1),
 });
 
 const resendOtpSchema = z.object({
@@ -61,6 +76,40 @@ function generateOTP(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function getCookieValue(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null;
+  const cookies = cookieHeader.split(';');
+  for (const cookie of cookies) {
+    const [rawKey, ...rest] = cookie.trim().split('=');
+    if (rawKey === name) return decodeURIComponent(rest.join('='));
+  }
+  return null;
+}
+
+function buildInviteToken(inviteId: string): string {
+  return crypto.createHmac('sha256', env.JWT_SECRET).update(`invite:${inviteId}`).digest('hex').slice(0, 32);
+}
+
+function timingSafeEqualString(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) return false;
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+function setAuthCookies(reply: FastifyReply, accessToken: string, refreshToken: string, refreshMaxAgeSeconds: number) {
+  const secure = env.NODE_ENV === 'production';
+  const refreshMaxAge = Math.max(1, Math.floor(refreshMaxAgeSeconds));
+  reply.header('Set-Cookie', [
+    `${ACCESS_COOKIE}=${encodeURIComponent(accessToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${ACCESS_TTL_SECONDS}${secure ? '; Secure' : ''}`,
+    `${SESSION_COOKIE}=${encodeURIComponent(refreshToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${refreshMaxAge}${secure ? '; Secure' : ''}`,
+  ]);
+}
+
 function logAudit(prisma: PrismaClient, event: string, userId: string | null, actorId: string | null, ipAddress: string, data: any) {
   return prisma.auditLog.create({
     data: {
@@ -77,10 +126,23 @@ function logAudit(prisma: PrismaClient, event: string, userId: string | null, ac
 export const authenticate: preHandlerHookHandler = async (req, reply) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const cookieToken = getCookieValue(req.headers.cookie, ACCESS_COOKIE);
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.replace('Bearer ', '') : null;
+    const token = bearerToken || cookieToken;
+
+    if (!token) {
       return reply.code(401).send({ error: 'No token provided' });
     }
-    const decoded = req.server.jwt.verify(authHeader.replace('Bearer ', ''));
+    const decoded = req.server.jwt.verify(token) as { id: string; email: string; role: string; sid?: string };
+    if (!decoded?.sid) {
+      return reply.code(401).send({ error: 'Invalid token' });
+    }
+
+    const session = await prisma.session.findUnique({ where: { id: decoded.sid } });
+    if (!session || !session.isActive || session.expiresAt <= new Date()) {
+      return reply.code(401).send({ error: 'Session expired' });
+    }
+
     (req as any).user = decoded;
   } catch (err) {
     return reply.code(401).send({ error: 'Invalid token' });
@@ -88,26 +150,37 @@ export const authenticate: preHandlerHookHandler = async (req, reply) => {
 };
 
 export async function authRoutes(fastify: FastifyInstance) {
-  fastify.post('/register', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.post('/register', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req: FastifyRequest, reply: FastifyReply) => {
     const data = registerSchema.parse(req.body);
+    const email = normalizeEmail(data.email);
 
-    const existing = await prisma.user.findUnique({ where: { email: data.email } });
+    const existing = await prisma.user.findUnique({ where: { emailNormalized: email } });
     if (existing) {
       return reply.code(400).send({ error: 'Email sudah terdaftar', code: 'EMAIL_EXISTS' });
+    }
+
+    const isInvitedStaff = !!data.inviteToken && !!data.eoId;
+
+    if (data.role === 'EO_STAFF' && !isInvitedStaff) {
+      return reply.code(400).send({ error: 'EO Staff registration requires a valid invite', code: 'INVITE_REQUIRED' });
     }
 
     // Validate invite token if present
     let invitedBy: string | undefined;
     let targetEoId: string | undefined;
-    if (data.inviteToken && data.eoId) {
+    if (isInvitedStaff) {
       const invite = await prisma.staffInvite.findFirst({
         where: {
-          email: data.email.toLowerCase(),
+          email,
           eoId: data.eoId,
           status: 'PENDING',
         },
       });
       if (!invite) {
+        return reply.code(400).send({ error: 'Invalid or expired invite', code: 'INVALID_INVITE' });
+      }
+      const expectedInviteToken = buildInviteToken(invite.id);
+      if (!data.inviteToken || !timingSafeEqualString(data.inviteToken, expectedInviteToken)) {
         return reply.code(400).send({ error: 'Invalid or expired invite', code: 'INVALID_INVITE' });
       }
       if (invite.expiresAt < new Date()) {
@@ -128,31 +201,45 @@ export async function authRoutes(fastify: FastifyInstance) {
 
     const passwordHash = await argon2.hash(data.password, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3 });
 
-    // Determine role and status
-    const isInvitedStaff = !!data.inviteToken && !!data.eoId;
-    const role = isInvitedStaff ? 'EO_STAFF' : data.role;
-    const status = role === 'CUSTOMER' ? 'ACTIVE' : isInvitedStaff ? 'ACTIVE' : 'PENDING_APPROVAL';
+    // Server-authoritative role assignment:
+    // - EO_STAFF only via valid invite token flow
+    // - Public registration may choose CUSTOMER/EO_ADMIN/AFFILIATE/RESELLER
+    // - EO_ADMIN requires approval before fully active
+    const requestedRole = data.role;
+    const publicAllowedRoles = new Set(['CUSTOMER', 'EO_ADMIN', 'AFFILIATE', 'RESELLER']);
+    const role = isInvitedStaff
+      ? 'EO_STAFF'
+      : (requestedRole && publicAllowedRoles.has(requestedRole) ? requestedRole : 'CUSTOMER');
+    const status = role === 'EO_ADMIN' ? 'PENDING_APPROVAL' : 'ACTIVE';
 
-    const user = await prisma.user.create({
-      data: {
-        email: data.email,
-        emailNormalized: data.email.toLowerCase(),
-        passwordHash,
-        name: data.name,
-        phone: data.phone,
-        role,
-        referralCode: generateReferralCode(),
-        status,
-        isVerified: true, // Invited staff is pre-verified
-        invitedBy: invitedBy,
-        inviteToken: data.inviteToken,
-      },
-    });
+    let user;
+    try {
+      user = await prisma.user.create({
+        data: {
+          email,
+          emailNormalized: email,
+          passwordHash,
+          name: data.name,
+          phone: data.phone,
+          role,
+          referralCode: generateReferralCode(),
+          status,
+          isVerified: isInvitedStaff,
+          invitedBy: invitedBy,
+          inviteToken: data.inviteToken,
+        },
+      });
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        return reply.code(400).send({ error: 'Email sudah terdaftar', code: 'EMAIL_EXISTS' });
+      }
+      throw error;
+    }
 
     // Mark invite as accepted
     if (isInvitedStaff && targetEoId) {
       await prisma.staffInvite.updateMany({
-        where: { email: data.email.toLowerCase(), eoId: targetEoId },
+        where: { email, eoId: targetEoId },
         data: { status: 'ACCEPTED' },
       });
     }
@@ -184,9 +271,18 @@ export async function authRoutes(fastify: FastifyInstance) {
     // Send OTP email
     try {
       const { sendOtpEmail } = await import('../services/email.js');
-      await sendOtpEmail(user.email, otp, user.name);
+      const emailResult = await sendOtpEmail(user.email, otp, user.name);
+      if (emailResult.provider === 'console') {
+        console.warn('[EMAIL] OTP stored in console fallback for', user.email);
+      }
     } catch (emailError) {
       console.error('[EMAIL] Failed to send OTP email:', emailError);
+      if (process.env.NODE_ENV === 'production') {
+        return reply.code(500).send({
+          error: 'Gagal mengirim email verifikasi',
+          code: 'EMAIL_SEND_FAILED',
+        });
+      }
     }
 
     logAudit(prisma, 'REGISTER', user.id, null, req.ip, { email: user.email, role: user.role });
@@ -195,10 +291,11 @@ export async function authRoutes(fastify: FastifyInstance) {
       message: 'Account created. Please verify your email.',
       userId: user.id,
       requiresVerification: true,
+      devOtp: process.env.NODE_ENV !== 'production' ? otp : undefined,
     });
   });
 
-  fastify.get('/invite/:token', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.get('/invite/:token', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { token } = req.params as { token: string };
 
     // Find invite by token (we need to search through pending invites)
@@ -206,14 +303,10 @@ export async function authRoutes(fastify: FastifyInstance) {
       where: { status: 'PENDING' },
     });
 
-    // Generate expected token for each email to match
+    // Verify invite token generated from invite id
     for (const invite of invites) {
-      const expectedToken = crypto.createHmac('sha256', process.env.JWT_SECRET || 'secret')
-        .update(`${invite.email}:${invite.eoId}:${Date.now()}`)
-        .digest('hex').slice(0, 32);
-      
-      // Simple comparison - in production use timing-safe comparison
-      if (token === expectedToken || token.length === 32) {
+      const expectedToken = buildInviteToken(invite.id);
+      if (timingSafeEqualString(token, expectedToken)) {
         if (invite.expiresAt < new Date()) {
           return reply.code(410).send({ error: 'Invite has expired', code: 'INVITE_EXPIRED' });
         }
@@ -229,24 +322,37 @@ export async function authRoutes(fastify: FastifyInstance) {
     return reply.code(404).send({ error: 'Invalid invite', code: 'INVALID_INVITE' });
   });
 
-  fastify.post('/verify-email', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.post('/verify-email', { config: { rateLimit: { max: 10, timeWindow: '10 minutes' } } }, async (req: FastifyRequest, reply: FastifyReply) => {
     try {
-      const { email, otp } = verifyOtpSchema.parse(req.body);
+      const parsed = verifyOtpSchema.parse(req.body);
+      const email = normalizeEmail(parsed.email);
+      const { otp } = parsed;
 
       const storedOtp = await redis.get(`otp:${email}`);
       if (!storedOtp || storedOtp !== otp) {
         return reply.code(400).send({ error: 'Kode OTP salah atau sudah expired', code: 'INVALID_OTP' });
       }
 
-      const user = await prisma.user.findUnique({ where: { email } });
+      const user = await prisma.user.findUnique({ where: { emailNormalized: email } });
       if (!user) {
         return reply.code(400).send({ error: 'User tidak ditemukan', code: 'USER_NOT_FOUND' });
       }
 
-      await prisma.user.update({
+      const verifiedUser = await prisma.user.update({
         where: { id: user.id },
         data: { isVerified: true },
       });
+
+      if (verifiedUser.role === 'EO_ADMIN') {
+        await (prisma as any).eoProfile.upsert({
+          where: { userId: verifiedUser.id },
+          update: {},
+          create: {
+            userId: verifiedUser.id,
+            companyName: verifiedUser.name || 'My EO',
+          },
+        });
+      }
 
       await redis.del(`otp:${email}`);
 
@@ -264,23 +370,30 @@ export async function authRoutes(fastify: FastifyInstance) {
         console.error('[EMAIL] Failed to send welcome email:', emailError);
       }
 
-      const token = fastify.jwt.sign({ id: user.id, email: user.email, role: user.role });
-      const refreshToken = uuidv4();
-
-      await prisma.session.create({
+      const refreshToken = crypto.randomBytes(32).toString('hex');
+      const session = await prisma.session.create({
         data: {
           userId: user.id,
-          tokenHash: refreshToken,
+          tokenHash: crypto.createHash('sha256').update(refreshToken).digest('hex'),
           ipAddress: req.ip,
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          expiresAt: new Date(Date.now() + REMEMBER_ME_TTL_SECONDS * 1000),
           isActive: true,
         },
       });
+      const accessToken = fastify.jwt.sign({ id: user.id, email: user.email, role: user.role, sid: session.id }, { expiresIn: '15m' });
+      setAuthCookies(reply, accessToken, refreshToken, REMEMBER_ME_TTL_SECONDS);
 
       return {
-        accessToken: token,
+        accessToken,
         refreshToken,
-        user: { id: user.id, name: user.name, email: user.email, role: user.role, isVerified: true },
+        user: {
+          id: verifiedUser.id,
+          name: verifiedUser.name,
+          email: verifiedUser.email,
+          role: verifiedUser.role,
+          status: verifiedUser.status,
+          isVerified: true,
+        },
       };
     } catch (error) {
       console.error('[VERIFY_EMAIL] Error details:', {
@@ -292,15 +405,20 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   });
 
-  fastify.post('/resend-otp', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { email } = forgotPasswordSchema.parse(req.body);
+  fastify.post('/resend-otp', { config: { rateLimit: { max: 5, timeWindow: '30 minutes' } } }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const parsed = forgotPasswordSchema.parse(req.body);
+    const email = normalizeEmail(parsed.email);
 
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prisma.user.findUnique({ where: { emailNormalized: email } });
     if (!user) {
       return reply.code(200).send({ message: 'If the email exists, an OTP will be sent' });
     }
 
-    const resendCount = await redis.incr(`resend:${email}`);
+    const resendKey = `resend:${email}`;
+    const resendCount = await redis.incr(resendKey);
+    if (resendCount === 1) {
+      await redis.expire(resendKey, 30 * 60);
+    }
     if (resendCount > 3) {
       return reply.code(429).send({ error: 'Too many requests, wait 30 minutes', code: 'RATE_LIMIT_EXCEEDED' });
     }
@@ -311,18 +429,29 @@ export async function authRoutes(fastify: FastifyInstance) {
     // Send OTP email
     try {
       const { sendOtpEmail } = await import('../services/email.js');
-      await sendOtpEmail(email, otp, user.name);
+      const emailResult = await sendOtpEmail(email, otp, user.name);
+      if (emailResult.provider === 'console') {
+        console.warn('[EMAIL] OTP stored in console fallback for', email);
+      }
     } catch (emailError) {
       console.error('[EMAIL] Failed to send OTP email:', emailError);
+      return reply.code(500).send({
+        error: 'Gagal mengirim email verifikasi',
+        code: 'EMAIL_SEND_FAILED',
+      });
     }
 
-    return { message: 'OTP resent', expiresIn: 900 };
+    return {
+      message: 'OTP resent',
+      expiresIn: 900,
+      devOtp: process.env.NODE_ENV !== 'production' ? otp : undefined,
+    };
   });
 
-  fastify.post('/login', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.post('/login', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req: FastifyRequest, reply: FastifyReply) => {
     try {
       const data = loginSchema.parse(req.body);
-      
+
       // Verify CAPTCHA
       if (env.NODE_ENV === 'production' || data.captchaToken) {
         const isHuman = await verifyTurnstileToken(data.captchaToken || '', req.ip);
@@ -331,41 +460,55 @@ export async function authRoutes(fastify: FastifyInstance) {
         }
       }
 
-      console.log('[LOGIN] Attempt for email:', data.email);
-
-      const user = await prisma.user.findUnique({ where: { email: data.email } });
+      const normalizedEmail = normalizeEmail(data.email);
+      const user = await prisma.user.findUnique({ where: { emailNormalized: normalizedEmail } });
       if (!user) {
-        console.log('[LOGIN] User not found for email:', data.email);
+        await argon2.verify(DUMMY_PASSWORD_HASH, data.password).catch(() => null);
         return reply.code(401).send({ error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' });
       }
 
-      console.log('[LOGIN] User found, checking status...');
-
       // Check if locked
       if (user.lockedUntil && user.lockedUntil > new Date()) {
-        console.log('[LOGIN] Account locked for user:', user.id);
         return reply.code(423).send({ error: 'Account locked. Try again later', code: 'ACCOUNT_LOCKED' });
       }
 
+      if (!user.passwordHash) {
+        return reply.code(401).send({ error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' });
+      }
+
+      const valid = await argon2.verify(user.passwordHash, data.password);
+      if (!valid) {
+        const failedAttempts = user.failedAttempts + 1;
+        const updateData: any = { failedAttempts };
+
+        if (failedAttempts >= 5) {
+          updateData.lockedUntil = new Date(Date.now() + 30 * 60 * 1000);
+        }
+
+        await prisma.user.update({ where: { id: user.id }, data: updateData });
+        logAudit(prisma, 'LOGIN_FAILED', user.id, null, req.ip, { reason: 'Wrong password', attempts: failedAttempts });
+
+        return reply.code(401).send({ error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' });
+      }
+
+      // Reset failed attempts on successful login
+      await prisma.user.update({ where: { id: user.id }, data: { failedAttempts: 0, lockedUntil: null } });
+
       if (!user.isVerified) {
-        console.log('[LOGIN] Email not verified for user:', user.id);
         return reply.code(401).send({ error: 'Email not verified', code: 'EMAIL_NOT_VERIFIED' });
       }
 
       if (user.status === 'BANNED') {
-        console.log('[LOGIN] User banned:', user.id);
         logAudit(prisma, 'LOGIN_BANNED', user.id, null, req.ip, {});
         return reply.code(403).send({ error: 'Akun dibanned', code: 'ACCOUNT_BANNED' });
       }
 
       if (user.status === 'SUSPENDED') {
-        console.log('[LOGIN] User suspended:', user.id);
         logAudit(prisma, 'LOGIN_SUSPENDED', user.id, null, req.ip, {});
         return reply.code(403).send({ error: 'Akun ditangguhkan', code: 'ACCOUNT_SUSPENDED' });
       }
 
       if (user.status === 'PENDING_APPROVAL') {
-        console.log('[LOGIN] User pending approval:', user.id);
         logAudit(prisma, 'LOGIN_PENDING_APPROVAL', user.id, null, req.ip, {});
         return reply.code(200).send({
           user: {
@@ -383,33 +526,6 @@ export async function authRoutes(fastify: FastifyInstance) {
           requiresApproval: true,
         });
       }
-
-      if (!user.passwordHash) {
-        console.log('[LOGIN] No password hash for user:', user.id);
-        return reply.code(401).send({ error: 'Use Google OAuth to login', code: 'USE_OAUTH' });
-      }
-
-      console.log('[LOGIN] Verifying password...');
-      const valid = await argon2.verify(user.passwordHash, data.password);
-      if (!valid) {
-        const failedAttempts = user.failedAttempts + 1;
-        const updateData: any = { failedAttempts };
-
-        if (failedAttempts >= 5) {
-          updateData.lockedUntil = new Date(Date.now() + 30 * 60 * 1000);
-        }
-
-        await prisma.user.update({ where: { id: user.id }, data: updateData });
-        logAudit(prisma, 'LOGIN_FAILED', user.id, null, req.ip, { reason: 'Wrong password', attempts: failedAttempts });
-
-        console.log('[LOGIN] Invalid password for user:', user.id, 'attempts:', failedAttempts);
-        return reply.code(401).send({ error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' });
-      }
-
-      console.log('[LOGIN] Password valid, proceeding...');
-
-      // Reset failed attempts on successful login
-      await prisma.user.update({ where: { id: user.id }, data: { failedAttempts: 0, lockedUntil: null } });
 
       // If 2FA enabled, return temp token for 2FA verification
       if (user.twoFAEnabled) {
@@ -435,24 +551,24 @@ export async function authRoutes(fastify: FastifyInstance) {
         };
       }
 
-      console.log('[LOGIN] Creating session for user:', user.id);
-      const token = fastify.jwt.sign({ id: user.id, email: user.email, role: user.role });
-      const refreshToken = uuidv4();
-      const expiresAt = new Date(Date.now() + (data.rememberMe ? 30 : 7) * 24 * 60 * 60 * 1000);
+      const refreshToken = crypto.randomBytes(32).toString('hex');
+      const refreshTtlSeconds = data.rememberMe ? REMEMBER_ME_TTL_SECONDS : SHORT_SESSION_TTL_SECONDS;
+      const expiresAt = new Date(Date.now() + refreshTtlSeconds * 1000);
 
-await prisma.session.create({
+      const session = await prisma.session.create({
         data: {
           userId: user.id,
-          tokenHash: refreshToken,
+          tokenHash: crypto.createHash('sha256').update(refreshToken).digest('hex'),
           ipAddress: req.ip,
           expiresAt,
           isActive: true,
         },
       });
+      const accessToken = fastify.jwt.sign({ id: user.id, email: user.email, role: user.role, sid: session.id }, { expiresIn: '15m' });
+      setAuthCookies(reply, accessToken, refreshToken, refreshTtlSeconds);
 
       logAudit(prisma, 'LOGIN_SUCCESS', user.id, null, req.ip, { rememberMe: data.rememberMe });
 
-      console.log('[LOGIN] Login successful for user:', user.id);
       return {
         user: {
           id: user.id,
@@ -466,7 +582,7 @@ await prisma.session.create({
           has2FA: user.twoFAEnabled,
           status: user.status,
         },
-        accessToken: token,
+        accessToken,
         refreshToken,
       };
     } catch (error) {
@@ -495,10 +611,10 @@ await prisma.session.create({
     const { code, state } = req.query as { code?: string; state?: string };
     const redirect = state;
     const redirectUri = env.GOOGLE_REDIRECT_URI;
-    
+
     // Debug log
     console.log('[GOOGLE callback] redirectUri:', redirectUri);
-    
+
     if (!code) {
       console.error('[GOOGLE callback] No code received from Google');
       return reply.redirect(`${env.NEXT_PUBLIC_WEB_URL || 'http://localhost:3000'}/auth/google/callback?error=no_code`);
@@ -550,26 +666,26 @@ await prisma.session.create({
             referralCode: generateReferralCode(),
           },
         });
-logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email });
+        logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email });
       }
 
-      const token = fastify.jwt.sign({ id: user.id, email: user.email, role: user.role });
-      const refreshToken = uuidv4();
-
-      await prisma.session.create({
+      const refreshToken = crypto.randomBytes(32).toString('hex');
+      const session = await prisma.session.create({
         data: {
           userId: user.id,
-          tokenHash: refreshToken,
+          tokenHash: crypto.createHash('sha256').update(refreshToken).digest('hex'),
           ipAddress: req.ip,
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          expiresAt: new Date(Date.now() + REMEMBER_ME_TTL_SECONDS * 1000),
           isActive: true,
         },
       });
+      const token = fastify.jwt.sign({ id: user.id, email: user.email, role: user.role, sid: session.id }, { expiresIn: '15m' });
+      setAuthCookies(reply, token, refreshToken, REMEMBER_ME_TTL_SECONDS);
 
       logAudit(prisma, 'GOOGLE_LOGIN', user.id, null, req.ip, {});
 
-      // Redirect to frontend with tokens
-      const redirectUrl = `${env.NEXT_PUBLIC_WEB_URL || 'http://localhost:3000'}/auth/google/callback?token=${token}${redirect ? `&redirect=${encodeURIComponent(redirect)}` : ''}`;
+      // Keep tokens only in httpOnly cookies; avoid token leakage in URL.
+      const redirectUrl = `${env.NEXT_PUBLIC_WEB_URL || 'http://localhost:3000'}/auth/google/callback${redirect ? `?redirect=${encodeURIComponent(redirect)}` : ''}`;
       return reply.redirect(redirectUrl);
 
     } catch (error) {
@@ -601,7 +717,6 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
           provider: 'google',
           providerId: googleUser.sub,
           isVerified: true,
-          emailVerified: true,
           referralCode: generateReferralCode(),
           role: 'CUSTOMER',
         },
@@ -609,18 +724,18 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
       logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email });
     }
 
-    const token = fastify.jwt.sign({ id: user.id, email: user.email, role: user.role });
-    const refreshToken = uuidv4();
-
-    await prisma.session.create({
+    const refreshToken = crypto.randomBytes(32).toString('hex');
+    const session = await prisma.session.create({
       data: {
         userId: user.id,
-        tokenHash: refreshToken,
+        tokenHash: crypto.createHash('sha256').update(refreshToken).digest('hex'),
         ipAddress: req.ip,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + REMEMBER_ME_TTL_SECONDS * 1000),
         isActive: true,
       },
     });
+    const token = fastify.jwt.sign({ id: user.id, email: user.email, role: user.role, sid: session.id }, { expiresIn: '15m' });
+    setAuthCookies(reply, token, refreshToken, REMEMBER_ME_TTL_SECONDS);
 
     logAudit(prisma, 'GOOGLE_LOGIN', user.id, null, req.ip, {});
 
@@ -631,17 +746,18 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
     };
   });
 
-  fastify.post('/forgot-password', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { email } = forgotPasswordSchema.parse(req.body);
+  fastify.post('/forgot-password', { config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const parsed = forgotPasswordSchema.parse(req.body);
+    const email = normalizeEmail(parsed.email);
 
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prisma.user.findUnique({ where: { emailNormalized: email } });
     if (!user) {
       return reply.code(200).send({ message: 'If the email exists, a reset link will be sent' });
     }
 
     const resetToken = crypto.randomBytes(32).toString('hex');
     // Store token -> userId for O(1) lookup
-    await redis.setex(`reset:${resetToken}`, 3600, user.id);
+    await redis.setex(`reset:${resetToken}`, 1800, user.id);
 
     // Send reset password email
     try {
@@ -655,7 +771,7 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
     return { message: 'Reset link sent if email exists' };
   });
 
-  fastify.post('/reset-password', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.post('/reset-password', { config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { token, password } = resetPasswordSchema.parse(req.body);
 
     // O(1) lookup by token
@@ -696,7 +812,7 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
     return { message: 'Password reset successful' };
   });
 
-  fastify.post('/2fa/verify', async (req: FastifyRequest, reply: FastifyReply) => {
+  fastify.post('/2fa/verify', { config: { rateLimit: { max: 10, timeWindow: '10 minutes' } } }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { tempToken, code } = verify2faSchema.parse(req.body);
 
     const userId = await redis.get(`2fa:${tempToken}`);
@@ -749,18 +865,18 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
 
     await redis.del(`2fa:${tempToken}`);
 
-    const token = fastify.jwt.sign({ id: user.id, email: user.email, role: user.role });
-    const refreshToken = uuidv4();
-
-    await prisma.session.create({
+    const refreshToken = crypto.randomBytes(32).toString('hex');
+    const session = await prisma.session.create({
       data: {
         userId: user.id,
-        tokenHash: refreshToken,
+        tokenHash: crypto.createHash('sha256').update(refreshToken).digest('hex'),
         ipAddress: req.ip,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        expiresAt: new Date(Date.now() + REMEMBER_ME_TTL_SECONDS * 1000),
         isActive: true,
       },
     });
+    const token = fastify.jwt.sign({ id: user.id, email: user.email, role: user.role, sid: session.id }, { expiresIn: '15m' });
+    setAuthCookies(reply, token, refreshToken, REMEMBER_ME_TTL_SECONDS);
 
     await prisma.user.update({
       where: { id: userId },
@@ -787,9 +903,9 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
   // 2FA Setup - generate secret and QR code
   fastify.post('/2fa/setup', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const user = (req as any).user as { id: string; email: string };
-    
+
     const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
-    
+
     if (dbUser?.twoFAEnabled) {
       return reply.code(400).send({ error: '2FA already enabled' });
     }
@@ -818,7 +934,7 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
   // 2FA Activate - verify code and enable
   fastify.post('/2fa/activate', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const user = (req as any).user as { id: string };
-    const { code, password } = req.body as { code: string; password: string };
+    const { code, password } = activate2faSchema.parse(req.body);
 
     const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
     if (!dbUser) {
@@ -851,10 +967,10 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
     }
 
     // Generate backup codes
-    const backupCodes = Array.from({ length: 8 }, () => 
+    const backupCodes = Array.from({ length: 8 }, () =>
       Math.random().toString(36).substring(2, 10).toUpperCase()
     );
-    const backupCodesHashed = backupCodes.map(code => 
+    const backupCodesHashed = backupCodes.map(code =>
       require('crypto').createHash('sha256').update(code).digest('hex')
     );
 
@@ -880,7 +996,7 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
   // 2FA Disable
   fastify.delete('/2fa', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const user = (req as any).user as { id: string };
-    const { password } = req.body as { password: string };
+    const { password } = disable2faSchema.parse(req.body);
 
     const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
     if (!dbUser) {
@@ -911,24 +1027,99 @@ logAudit(prisma, 'GOOGLE_REGISTER', user.id, null, req.ip, { email: user.email }
     return { message: '2FA disabled successfully' };
   });
 
-  fastify.post('/logout', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
-    const user = (req as any).user as { id: string };
+  fastify.post('/logout', async (req: FastifyRequest, reply: FastifyReply) => {
     const authHeader = req.headers.authorization;
+    const cookieAccessToken = getCookieValue(req.headers.cookie, ACCESS_COOKIE);
+    const cookieRefreshToken = getCookieValue(req.headers.cookie, SESSION_COOKIE);
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.replace('Bearer ', '') : null;
+    const accessToken = bearerToken || cookieAccessToken;
 
-    if (authHeader) {
-      const token = authHeader.replace('Bearer ', '');
-      // In production: blacklist the JWT token
+    let userId: string | null = null;
+
+    // Best effort invalidation:
+    // 1) Try access token -> session id
+    // 2) Fallback to refresh token hash
+    try {
+      if (accessToken) {
+        const decoded = fastify.jwt.verify(accessToken) as { id?: string; sid?: string };
+        if (decoded?.sid) {
+          await prisma.session.update({
+            where: { id: decoded.sid },
+            data: { isActive: false },
+          }).catch(() => null);
+        }
+        if (decoded?.id) {
+          userId = decoded.id;
+        }
+      }
+    } catch {
+      // Ignore invalid/expired access token on logout
     }
 
-    // Invalidate current session
-    await prisma.session.updateMany({
-      where: { userId: user.id, isActive: true },
-      data: { isActive: false },
-    });
+    if (cookieRefreshToken) {
+      const tokenHash = crypto.createHash('sha256').update(cookieRefreshToken).digest('hex');
+      const session = await prisma.session.findUnique({ where: { tokenHash } });
+      if (session) {
+        await prisma.session.update({
+          where: { id: session.id },
+          data: { isActive: false },
+        }).catch(() => null);
+        if (!userId) userId = session.userId;
+      }
+    }
 
-    logAudit(prisma, 'LOGOUT', user.id, null, req.ip, {});
+    if (userId) {
+      logAudit(prisma, 'LOGOUT', userId, null, req.ip, {});
+    }
+
+    const secure = env.NODE_ENV === 'production';
+    reply.header('Set-Cookie', [
+      `${ACCESS_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`,
+      `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`,
+    ]);
 
     return { message: 'Logged out successfully' };
+  });
+
+  fastify.post('/refresh', { config: { rateLimit: { max: 20, timeWindow: '15 minutes' } } }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const body = (req.body || {}) as { refreshToken?: string };
+    const cookieToken = getCookieValue(req.headers.cookie, SESSION_COOKIE);
+    const refreshToken = body.refreshToken || cookieToken;
+
+    if (!refreshToken) {
+      return reply.code(401).send({ error: 'Refresh token missing', code: 'REFRESH_TOKEN_MISSING' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    const session = await prisma.session.findUnique({
+      where: { tokenHash },
+      include: { user: { select: { id: true, email: true, role: true } } },
+    });
+
+    if (!session || !session.isActive || session.expiresAt <= new Date()) {
+      return reply.code(401).send({ error: 'Invalid refresh token', code: 'INVALID_REFRESH_TOKEN' });
+    }
+
+    const newRefreshToken = crypto.randomBytes(32).toString('hex');
+    const newTokenHash = crypto.createHash('sha256').update(newRefreshToken).digest('hex');
+
+    await prisma.session.update({
+      where: { id: session.id },
+      data: {
+        tokenHash: newTokenHash,
+        expiresAt: session.expiresAt,
+        isActive: true,
+      },
+    });
+
+    const accessToken = fastify.jwt.sign(
+      { id: session.user.id, email: session.user.email, role: session.user.role, sid: session.id },
+      { expiresIn: '15m' }
+    );
+    const remainingSeconds = Math.floor((session.expiresAt.getTime() - Date.now()) / 1000);
+    setAuthCookies(reply, accessToken, newRefreshToken, remainingSeconds);
+
+    return { accessToken, refreshToken: newRefreshToken };
   });
 
   fastify.get('/me', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {

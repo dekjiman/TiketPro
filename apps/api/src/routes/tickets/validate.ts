@@ -82,7 +82,7 @@ export async function validateTicketRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ valid: false, reason: 'TICKET_NOT_FOUND' });
     }
 
-    if (ticket.status === 'USED') {
+    if (ticket.status === 'CHECKIN') {
       await createScanLog(gateAuth.staffId, gateAuth.gateId, ticket.id, 'INVALID', 'ALREADY_USED');
       return reply.code(400).send({
         valid: false,
@@ -128,7 +128,7 @@ export async function validateTicketRoutes(fastify: FastifyInstance) {
       prisma.ticket.update({
         where: { id: ticket.id },
         data: {
-          status: 'USED',
+          status: 'CHECKIN',
           usedAt: new Date(),
           usedGateId: gateAuth.gateId
         }

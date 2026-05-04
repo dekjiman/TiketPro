@@ -5,7 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { api } from '@/lib/api';
 import { Button, Input } from '@/components/ui';
-import { MapPin, Calendar, Search, ChevronDown, Star } from 'lucide-react';
+import { MapPin, Calendar, Search, Star } from 'lucide-react';
 import Footer from '@/components/Footer';
 import { PublicNavbar } from '@/components/PublicNavbar';
 
@@ -16,24 +16,25 @@ interface Event {
   startDate: string;
   bannerUrl?: string;
   thumbnailUrl?: string;
+  images?: { id: string; imageUrl: string; orderIndex: number }[];
   lowestPrice?: number;
 }
 
 function SkeletonCard() {
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden animate-pulse">
-      <div className="h-48 bg-slate-200"></div>
+    <div className="bg-white dark:bg-slate-900 rounded-lg shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden animate-pulse">
+      <div className="h-48 bg-slate-200 dark:bg-slate-800"></div>
       <div className="p-4 space-y-3">
-        <div className="h-4 bg-slate-200 rounded w-3/4"></div>
-        <div className="h-3 bg-slate-200 rounded w-1/2"></div>
-        <div className="h-3 bg-slate-200 rounded w-1/3"></div>
+        <div className="h-4 bg-slate-200 dark:bg-slate-800 rounded w-3/4"></div>
+        <div className="h-3 bg-slate-200 dark:bg-slate-800 rounded w-1/2"></div>
+        <div className="h-3 bg-slate-200 dark:bg-slate-800 rounded w-1/3"></div>
       </div>
     </div>
   );
 }
 
 function EventCard({ event }: { event: Event }) {
-  const imageUrl = event.bannerUrl || event.thumbnailUrl || '/placeholder-event.jpg';
+  const imageUrl = event.images?.[0]?.imageUrl || event.bannerUrl || event.thumbnailUrl || '/placeholder-event.jpg';
   const date = new Date(event.startDate).toLocaleDateString('id-ID', {
     day: 'numeric',
     month: 'long',
@@ -42,8 +43,8 @@ function EventCard({ event }: { event: Event }) {
 
   return (
     <Link href={`/events/${event.slug}`} className="group">
-      <div className="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden hover:shadow-lg transition-all duration-200 group-hover:scale-[1.02]">
-        <div className="relative h-48 bg-slate-100">
+      <div className="bg-white dark:bg-slate-900 rounded-lg shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden hover:shadow-lg transition-all duration-200 group-hover:scale-[1.02]">
+        <div className="relative h-48 bg-slate-100 dark:bg-slate-800">
           <Image
             src={imageUrl}
             alt={event.title}
@@ -53,10 +54,10 @@ function EventCard({ event }: { event: Event }) {
           />
         </div>
         <div className="p-4">
-          <h3 className="font-semibold text-slate-900 mb-2 line-clamp-2 group-hover:text-blue-600 transition-colors">
+          <h3 className="font-semibold text-slate-900 dark:text-slate-100 mb-2 line-clamp-2 group-hover:text-blue-600 dark:group-hover:text-cyan-400 transition-colors">
             {event.title}
           </h3>
-          <div className="space-y-1 text-sm text-slate-600">
+          <div className="space-y-1 text-sm text-slate-600 dark:text-slate-300">
             <div className="flex items-center gap-1">
               <MapPin className="w-4 h-4" />
               {event.city}
@@ -66,7 +67,7 @@ function EventCard({ event }: { event: Event }) {
               {date}
             </div>
             {event.lowestPrice && (
-              <div className="font-semibold text-green-600">
+              <div className="font-semibold text-emerald-600 dark:text-emerald-400">
                 Rp {event.lowestPrice.toLocaleString('id-ID')}
               </div>
             )}
@@ -84,7 +85,7 @@ export default function LandingPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [city, setCity] = useState('');
   const [hasMore, setHasMore] = useState(true);
-  const [offset, setOffset] = useState(0);
+  const [page, setPage] = useState(1);
 
   const fetchFeatured = async () => {
     try {
@@ -99,15 +100,16 @@ export default function LandingPage() {
     try {
       if (reset) {
         setLoading(true);
-        setOffset(0);
+        setPage(1);
       } else {
         setLoadingMore(true);
       }
 
+      const currentPage = reset ? 1 : page;
       const params = new URLSearchParams({
         limit: '12',
         status: 'PUBLISHED',
-        offset: reset ? '0' : offset.toString(),
+        page: currentPage.toString(),
       });
 
       if (city) params.append('city', city);
@@ -121,7 +123,7 @@ export default function LandingPage() {
         setEvents(prev => [...prev, ...newEvents]);
       }
 
-      setOffset(prev => prev + newEvents.length);
+      setPage(prev => prev + 1);
       setHasMore(newEvents.length === 12);
     } catch (err) {
       console.error('Failed to fetch events', err);
@@ -147,7 +149,7 @@ export default function LandingPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
       <PublicNavbar />
 
       {/* Hero Section */}
@@ -169,7 +171,7 @@ export default function LandingPage() {
                 onChange={e => setCity(e.target.value)}
               />
             </div>
-            <Button onClick={scrollToEvents} className="bg-white text-blue-600 hover:bg-slate-100 px-8 py-3 font-semibold">
+            <Button onClick={scrollToEvents} className="bg-amber-300 text-slate-900 hover:bg-amber-200 border border-amber-100 px-8 py-3 font-semibold shadow-md">
               Lihat Event
             </Button>
           </div>
@@ -181,7 +183,7 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto">
           <div className="flex items-center gap-3 mb-8">
             <Star className="w-6 h-6 text-yellow-500" />
-            <h2 className="text-2xl font-bold text-slate-900">Event Unggulan</h2>
+            <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Event Unggulan</h2>
           </div>
           {featuredEvents.length > 0 ? (
             <div className="flex gap-6 overflow-x-auto pb-4">
@@ -204,17 +206,17 @@ export default function LandingPage() {
       </section>
 
       {/* Event List */}
-      <section id="events-section" className="py-16 px-4 bg-white">
+      <section id="events-section" className="py-16 px-4 bg-white dark:bg-slate-900">
         <div className="max-w-7xl mx-auto">
           <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
-            <h2 className="text-2xl font-bold text-slate-900">Semua Event</h2>
+            <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Semua Event</h2>
 
             {/* Filters */}
             <div className="flex gap-4">
               <select
                 value={city}
                 onChange={e => setCity(e.target.value)}
-                className="px-4 py-2 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="px-4 py-2 border border-slate-300 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">Semua Kota</option>
                 <option value="Jakarta">Jakarta</option>
@@ -245,7 +247,7 @@ export default function LandingPage() {
                   <Button
                     onClick={() => fetchEvents()}
                     disabled={loadingMore}
-                    className="bg-slate-100 text-slate-700 hover:bg-slate-200"
+                    className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700"
                   >
                     {loadingMore ? 'Memuat...' : 'Muat Lebih Banyak'}
                   </Button>
@@ -254,10 +256,10 @@ export default function LandingPage() {
             </>
           ) : (
             <div className="text-center py-16">
-              <div className="p-8 bg-slate-50 rounded-lg max-w-md mx-auto">
-                <Calendar className="w-12 h-12 text-slate-400 mx-auto mb-4" />
-                <h3 className="text-lg font-semibold text-slate-900 mb-2">Tidak ada event ditemukan</h3>
-                <p className="text-slate-600 mb-4">Silakan coba kota lain</p>
+              <div className="p-8 bg-slate-50 dark:bg-slate-800 rounded-lg max-w-md mx-auto border border-slate-200 dark:border-slate-700">
+                <Calendar className="w-12 h-12 text-slate-400 dark:text-slate-500 mx-auto mb-4" />
+                <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-2">Tidak ada event ditemukan</h3>
+                <p className="text-slate-600 dark:text-slate-300 mb-4">Silakan coba kota lain</p>
                 <Button onClick={() => { setCity(''); }} variant="outline">
                   Reset Filter
                 </Button>
@@ -268,12 +270,12 @@ export default function LandingPage() {
       </section>
 
       {/* CTA Banner */}
-      <section className="py-16 px-4 bg-gradient-to-r from-purple-600 to-indigo-600 text-white">
+      <section className="py-16 px-4 bg-gradient-to-r from-emerald-700 via-teal-700 to-cyan-700 text-white">
         <div className="max-w-4xl mx-auto text-center">
           <h2 className="text-3xl font-bold mb-4">Punya Event Sendiri?</h2>
           <p className="text-xl mb-8 opacity-90">Jadilah Event Organizer dan mulai jual tiket event Anda</p>
           <Link href="/register">
-            <Button className="bg-white text-purple-600 hover:bg-slate-100 px-8 py-3 font-semibold text-lg">
+            <Button className="bg-amber-300 text-slate-900 hover:bg-amber-200 border border-amber-100 px-8 py-3 font-semibold text-lg shadow-md">
               Jadi Event Organizer
             </Button>
           </Link>

@@ -9,7 +9,7 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(
     return (
       <div
         ref={ref}
-        className={`bg-white rounded-xl border border-slate-200 shadow-sm ${className}`}
+        className={`bg-[var(--surface)] rounded-xl border border-[var(--border)] shadow-sm ${className}`}
         {...props}
       />
     );
@@ -33,7 +33,7 @@ export const CardTitle = forwardRef<HTMLHeadingElement, HTMLAttributes<HTMLHeadi
     return (
       <h3
         ref={ref}
-        className={`text-lg font-semibold text-slate-900 ${className}`}
+        className={`text-lg font-semibold text-[var(--text)] ${className}`}
         {...props}
       />
     );
@@ -45,7 +45,7 @@ export const CardDescription = forwardRef<HTMLParagraphElement, HTMLAttributes<H
     return (
       <p
         ref={ref}
-        className={`text-sm text-slate-500 mt-1 ${className}`}
+        className={`text-sm text-[var(--muted)] mt-1 ${className}`}
         {...props}
       />
     );

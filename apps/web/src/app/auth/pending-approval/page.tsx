@@ -47,7 +47,7 @@ export default function PendingApprovalPage() {
         
         <div className="bg-white rounded-xl border border-slate-200 p-4 mb-6 text-left">
           <div className="flex items-start gap-3">
-            <svg className="w-5 h-5 text-[#065F46] mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-5 h-5 text-emerald-700 dark:text-emerald-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <div>

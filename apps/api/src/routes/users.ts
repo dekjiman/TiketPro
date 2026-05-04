@@ -18,6 +18,82 @@ const updatePasswordSchema = z.object({
 });
 
 export async function userRoutes(fastify: FastifyInstance) {
+  fastify.get('/dashboard', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const authUser = (req as any).user as { id: string };
+    if (!authUser?.id) {
+      return reply.code(401).send({ error: 'Unauthorized' });
+    }
+
+    const userId = authUser.id;
+
+    try {
+      const [activeTickets, ordersCount, gameProfile, referralsCount, recentOrders, recentTickets] = await Promise.all([
+        prisma.ticket.count({ where: { userId, status: 'ACTIVE' } }),
+        prisma.order.count({ where: { userId } }),
+        prisma.userGameProfile.findUnique({ where: { userId }, select: { totalXp: true } }),
+        prisma.referralTransaction.count({ where: { referrerId: userId } }),
+        prisma.order.findMany({
+          where: { userId },
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+          select: {
+            id: true,
+            status: true,
+            createdAt: true,
+            finalAmount: true,
+            event: { select: { title: true } },
+          },
+        }),
+        prisma.ticket.findMany({
+          where: { userId },
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+          select: {
+            id: true,
+            status: true,
+            createdAt: true,
+            ticketCode: true,
+            category: { select: { name: true } },
+          },
+        }),
+      ]);
+
+      const activities = [
+        ...recentOrders.map((order) => ({
+          id: `order-${order.id}`,
+          type: 'ORDER',
+          title: `Pesanan ${order.status}`,
+          subtitle: `${order.event?.title || 'Event'} • Rp${Number(order.finalAmount || 0).toLocaleString('id-ID')}`,
+          createdAt: order.createdAt,
+          targetPath: `/dashboard/orders/${order.id}`,
+        })),
+        ...recentTickets.map((ticket) => ({
+          id: `ticket-${ticket.id}`,
+          type: 'TICKET',
+          title: `Tiket ${ticket.status}`,
+          subtitle: `${ticket.category?.name || ticket.ticketCode}`,
+          createdAt: ticket.createdAt,
+          targetPath: `/dashboard/my-tickets/tickets/${ticket.id}`,
+        })),
+      ]
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .slice(0, 8);
+
+      return {
+        stats: {
+          activeTickets,
+          orders: ordersCount,
+          points: gameProfile?.totalXp || 0,
+          referrals: referralsCount,
+        },
+        activities,
+      };
+    } catch (error) {
+      console.error('[GET /users/dashboard]', error);
+      return reply.code(500).send({ error: 'Gagal memuat dashboard' });
+    }
+  });
+
   fastify.get('/me', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const authUser = (req as any).user;
     
@@ -157,5 +233,31 @@ export async function userRoutes(fastify: FastifyInstance) {
     return { message: 'All other sessions logged out' };
   });
 
+  fastify.get('/check-email', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { email } = req.query as { email: string };
+    if (!email) {
+      return reply.code(400).send({ error: 'Email required' });
+    }
 
+    try {
+      const user = await prisma.user.findUnique({
+        where: { email },
+        select: { id: true, name: true, email: true },
+      });
+
+      if (!user) {
+        return { exists: false };
+      }
+
+      return {
+        exists: true,
+        id: user.id,
+        name: user.name,
+        email: user.email,
+      };
+    } catch (error) {
+      console.error('[GET /users/check-email]', error);
+      return reply.code(500).send({ error: 'Internal server error' });
+    }
+  });
 }

@@ -69,7 +69,7 @@ export default function EOEventsPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (user && user.role !== 'EO_ADMIN' && user.role !== 'EO_STAFF') {
+    if (user && user.role !== 'EO_ADMIN') {
       toast.showToast('error', 'Access denied');
       router.push('/dashboard');
     }
@@ -109,15 +109,15 @@ export default function EOEventsPage() {
   };
 
   useEffect(() => {
-    if (user?.role === 'EO_ADMIN' || user?.role === 'EO_STAFF') {
+    if (user?.role === 'EO_ADMIN') {
       loadEvents();
     }
   }, [user, search, status, page]);
 
-  if (!user || (user.role !== 'EO_ADMIN' && user.role !== 'EO_STAFF')) {
+  if (!user || user.role !== 'EO_ADMIN') {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+        <div className="w-8 h-8 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -183,7 +183,7 @@ export default function EOEventsPage() {
       {/* Loading */}
       {loading ? (
         <div className="flex justify-center py-12">
-          <div className="w-8 h-8 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
         </div>
       ) : events.length === 0 ? (
         <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-8 text-center">
@@ -199,7 +199,7 @@ export default function EOEventsPage() {
           {events.map((event) => (
             <div
               key={event.id}
-              className="group bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 hover:border-[#065F46] hover:shadow-md transition-all duration-200"
+              className="group bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 hover:border-emerald-600 dark:hover:border-emerald-500 hover:shadow-md transition-all duration-200"
             >
               <div className="flex items-start gap-4">
                 {/* Thumbnail */}
@@ -225,7 +225,7 @@ export default function EOEventsPage() {
                 </div>
 
                 {/* Actions */}
-                <div className="flex-shrink-0 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="flex-shrink-0 flex gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                   <Button
                     variant="ghost"
                     size="sm"
@@ -289,7 +289,7 @@ export default function EOEventsPage() {
                 Batal
               </Button>
               <Button
-                variant="destructive"
+                variant="danger"
                 onClick={async () => {
                   try {
                     await api.delete(`/api/events/${deleteId}`);

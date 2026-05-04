@@ -3,8 +3,9 @@
 import { useState, useEffect } from 'react';
 import { api, getApiError } from '@/lib/api';
 import { Button, Input, Textarea } from '@/components/ui';
-import { Loader2, AlertCircle, CheckCircle2, User, Mail, Send } from 'lucide-react';
+import { Loader2, CheckCircle2, Send } from 'lucide-react';
 import { toast } from 'sonner';
+import axios from 'axios';
 
 interface TransferModalProps {
   ticketId: string;
@@ -28,6 +29,7 @@ export function TransferModal({ ticketId, isOpen, onClose, onSuccess }: Transfer
   const [recipientInfo, setRecipientInfo] = useState<RecipientInfo | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [canResendPending, setCanResendPending] = useState(false);
 
   useEffect(() => {
     if (!isOpen) {
@@ -37,36 +39,22 @@ export function TransferModal({ ticketId, isOpen, onClose, onSuccess }: Transfer
       setRecipientInfo(null);
       setEmailError(null);
       setApiError(null);
+      setCanResendPending(false);
     }
   }, [isOpen]);
 
   const handleEmailBlur = async () => {
-    if (!email || !email.includes('@')) {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
       setEmailError('Format email tidak valid');
       setRecipientInfo(null);
       return;
     }
-
     setEmailError(null);
-    setLoading(true);
-
-    try {
-      const res = await api.get(`/users/check-email?email=${encodeURIComponent(email)}`);
-      if (res.data?.exists) {
-        setRecipientInfo({
-          name: res.data.name,
-          email: res.data.email,
-        });
-      } else {
-        setEmailError('Email tidak terdaftar di TiketPro');
-        setRecipientInfo(null);
-      }
-    } catch (err) {
-      setEmailError('Gagal validasi email');
-      setRecipientInfo(null);
-    } finally {
-      setLoading(false);
-    }
+    setRecipientInfo({
+      name: normalizedEmail.split('@')[0] || normalizedEmail,
+      email: normalizedEmail,
+    });
   };
 
   const handleSubmitInitiate = async () => {
@@ -78,9 +66,10 @@ export function TransferModal({ ticketId, isOpen, onClose, onSuccess }: Transfer
   const handleConfirmTransfer = async () => {
     setLoading(true);
     setApiError(null);
+    setCanResendPending(false);
 
     try {
-      await api.post(`/tickets/${ticketId}/transfer/initiate`, {
+      await api.post(`/api/tickets/${ticketId}/transfer/initiate`, {
         recipientEmail: email,
         message: message || undefined,
       });
@@ -88,8 +77,27 @@ export function TransferModal({ ticketId, isOpen, onClose, onSuccess }: Transfer
       setStep('success');
       onSuccess?.();
     } catch (err) {
+      const rawErrorCode = axios.isAxiosError(err)
+        ? ((err.response?.data as any)?.code || (err.response?.data as any)?.error || '')
+        : '';
       const error = getApiError(err);
-      setApiError(error.message);
+      setApiError(error.error);
+      setCanResendPending(rawErrorCode === 'TRANSFER_ALREADY_PENDING');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendPendingTransfer = async () => {
+    setLoading(true);
+    try {
+      await api.post(`/api/tickets/${ticketId}/transfer/resend`);
+      toast.success('Undangan transfer berhasil dikirim ulang');
+      setApiError(null);
+      setCanResendPending(false);
+    } catch (err) {
+      const error = getApiError(err);
+      toast.error(error.message || 'Gagal mengirim ulang undangan transfer');
     } finally {
       setLoading(false);
     }
@@ -158,8 +166,7 @@ export function TransferModal({ ticketId, isOpen, onClose, onSuccess }: Transfer
                   )}
                   {recipientInfo && (
                     <p className="text-sm text-green-600 mt-1 flex items-center gap-1">
-                      <User className="w-4 h-4" />
-                      Kirim ke: {recipientInfo.name}
+                      Kirim ke: {recipientInfo.email}
                     </p>
                   )}
                 </div>
@@ -185,7 +192,21 @@ export function TransferModal({ ticketId, isOpen, onClose, onSuccess }: Transfer
               </div>
 
               {apiError && (
-                <p className="text-sm text-red-500 mt-3">{apiError}</p>
+                <div className="mt-3 space-y-2">
+                  <p className="text-sm text-red-500">{apiError}</p>
+                  {canResendPending && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleResendPendingTransfer}
+                      disabled={loading}
+                      className="w-full"
+                    >
+                      {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                      Resend Undangan Transfer
+                    </Button>
+                  )}
+                </div>
               )}
 
               <div className="mt-6 flex gap-2">
@@ -194,7 +215,7 @@ export function TransferModal({ ticketId, isOpen, onClose, onSuccess }: Transfer
                 </Button>
                 <Button
                   onClick={handleSubmitInitiate}
-                  disabled={!recipientInfo || loading}
+                  disabled={!email.trim() || !!emailError || loading}
                   className="flex-1"
                 >
                   {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Send className="w-4 h-4 mr-2" />}
@@ -212,11 +233,11 @@ export function TransferModal({ ticketId, isOpen, onClose, onSuccess }: Transfer
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className="text-gray-500">Kepada</span>
-                      <span className="font-medium">{recipientInfo?.name}</span>
+                      <span className="font-medium">{recipientInfo?.email || email}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-500">Email</span>
-                      <span className="font-medium">{recipientInfo?.email}</span>
+                      <span className="font-medium">{recipientInfo?.email || email}</span>
                     </div>
                     {message && (
                       <div className="flex justify-between">
@@ -256,7 +277,7 @@ export function TransferModal({ ticketId, isOpen, onClose, onSuccess }: Transfer
                 </div>
                 <h3 className="text-lg font-semibold mb-2">Permintaan Transfer Dikirim</h3>
                 <p className="text-gray-600 mb-4">
-                  Permintaan transfer dikirim ke <strong>{recipientInfo?.name}</strong>
+                  Permintaan transfer dikirim ke <strong>{recipientInfo?.email || email}</strong>
                 </p>
                 <p className="text-sm text-gray-500">
                   Pemegang punya 24 jam untuk menerima transfer

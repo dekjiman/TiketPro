@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq';
-import { redis } from '../services/redis.js';
+import { redis, Queues } from '../services/redis.js';
 import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env.js';
 
@@ -181,7 +181,12 @@ async function processor(job: { data: { orderId: string }; attemptsMade?: number
       pdfUrl: ticket.pdfUrl || `${env.CLOUDFLARE_R2_PUBLIC_URL}/tickets/${ticket.id}.pdf`
     });
 
-    const sent = await sendWaMessage(ticket.holderPhone, message, ticket.pdfUrl);
+    if (!ticket.holderPhone) {
+      failCount++;
+      continue;
+    }
+
+    const sent = await sendWaMessage(ticket.holderPhone, message, ticket.pdfUrl || undefined);
     if (sent) {
       await prisma.ticket.update({
         where: { id: ticket.id },
@@ -197,13 +202,13 @@ async function processor(job: { data: { orderId: string }; attemptsMade?: number
 }
 
 export function createTicketWaWorker() {
-  const worker = new Worker('ticket:wa', processor, {
+  const worker = new Worker(Queues.TICKET_WA, processor, {
     connection: redis,
     concurrency: 5
   });
 
   worker.on('failed', (job, err) => {
-    console.error('ticket:wa failed:', { jobId: job?.id, error: err.message });
+    console.error('ticket-wa failed:', { jobId: job?.id, error: err.message });
   });
 
   console.log('Ticket WA worker started');

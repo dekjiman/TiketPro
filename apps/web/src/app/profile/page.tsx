@@ -77,7 +77,7 @@ export default function ProfilePage() {
         <h1 className="text-2xl font-bold text-slate-900 dark:text-white" style={{ fontFamily: 'Manrope' }}>
           Pengaturan Profil
         </h1>
-        <Link href="/profile/sessions" className="text-sm text-[#065F46] hover:underline dark:text-emerald-400">
+        <Link href="/profile/sessions" className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline">
           Kelola Sesi
         </Link>
       </div>

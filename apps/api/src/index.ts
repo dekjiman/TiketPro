@@ -1,4 +1,7 @@
-import 'dotenv/config'; // Trigger Restart
+import dotenv from 'dotenv';
+// Load .env and override any existing env vars to ensure .env takes precedence
+dotenv.config({ override: true });
+
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -11,18 +14,25 @@ import { fileURLToPath } from 'url';
 import { PrismaClient } from '@prisma/client';
 import { ZodError } from 'zod';
 import { connectRedis } from './services/redis.js';
+import { env } from './config/env.js';
 import { authRoutes } from './routes/auth.js';
 import { userRoutes } from './routes/users.js';
 import { adminUserRoutes } from './routes/admin.js';
 import { eventRoutes } from './routes/events.js';
 import { orderRoutes } from './routes/orders.js';
-import { ticketRoutes } from './routes/tickets.js';
+import { ticketRoutes } from './routes/tickets/index.js';
+import { ticketRoutes as legacyTicketRoutes } from './routes/tickets.js';
 import { rfidRoutes } from './routes/rfid.js';
 import { gamiRoutes } from './routes/gamification.js';
 import { lotteryRoutes } from './routes/lottery.js';
+import { prizeRoutes } from './routes/prizes.js';
 import { eoRoutes } from './routes/eo.js';
+import { eoTicketRoutes } from './routes/eo-tickets.js';
 import { settingsRoutes } from './routes/settings.js';
-import { env } from './config/env.js';
+import { checkinRoutes } from './routes/checkin.js';
+import { notificationRoutes } from './routes/notifications.js';
+import { paymentRoutes } from './routes/payments.js';
+import { createTicketGenerateWorker, createTicketWaWorker, createTicketResendWorker, createOrderExpireWorker } from './workers/index.js';
 
 export const prisma = new PrismaClient();
 const __filename = fileURLToPath(import.meta.url);
@@ -34,14 +44,17 @@ export async function buildApp() {
     bodyLimit: 52428800, // 50MB
   });
 
-  await app.register(helmet);
+  await app.register(helmet, {
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: false, // Disable CSP for easier development, or configure specifically
+  });
   await app.register(cors, {
     origin: env.NODE_ENV === 'production' ? process.env.ALLOWED_ORIGINS?.split(',') : true,
     credentials: true
   });
 
-  await app.register(multipart);
-  await app.register(fastifyStatic, {
+   await app.register(multipart);
+   await app.register(fastifyStatic, {
     root: path.join(__dirname, '../public'),
     prefix: '/public/',
   });
@@ -58,7 +71,7 @@ export async function buildApp() {
     errorResponseBuilder: (req, context) => ({
       error: 'Too many requests, please try again later',
       code: 'RATE_LIMIT_EXCEEDED',
-      expiresIn: Math.ceil(context.after / 1000)
+      expiresIn: Math.ceil(Number(context.after) / 1000)
     })
   });
 
@@ -98,11 +111,29 @@ export async function buildApp() {
   await app.register(eventRoutes, { prefix: '/api/events' });
   await app.register(orderRoutes, { prefix: '/api/orders' });
   await app.register(ticketRoutes, { prefix: '/api/tickets' });
+  await app.register(legacyTicketRoutes, { prefix: '/api/tickets' });
   await app.register(rfidRoutes, { prefix: '/api/rfid' });
   await app.register(gamiRoutes, { prefix: '/api/gami' });
   await app.register(lotteryRoutes, { prefix: '/api/lottery' });
+  await app.register(prizeRoutes, { prefix: '/api/prizes' });
   await app.register(eoRoutes, { prefix: '/api/eo' });
+  await app.register(eoTicketRoutes, { prefix: '/api/eo' });
+  await app.register(checkinRoutes, { prefix: '/api/checkin' });
   await app.register(settingsRoutes, { prefix: '/api/admin/settings' });
+  await app.register(notificationRoutes, { prefix: '/api/notifications' });
+  await app.register(paymentRoutes, { prefix: '/api/payments' });
+
+  // Start background workers after app is ready
+  try {
+    createTicketGenerateWorker();
+    createTicketWaWorker();
+    createTicketResendWorker();
+    createOrderExpireWorker();
+    console.log('Background workers started');
+  } catch (workerError) {
+    console.error('Failed to start some workers:', workerError);
+    // Non-fatal - continue without workers
+  }
 
   app.get('/health', async () => ({
     status: 'ok',

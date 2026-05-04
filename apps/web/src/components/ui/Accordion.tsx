@@ -17,7 +17,7 @@ export function Accordion({ children, defaultOpen }: { children: ReactNode; defa
   const [open, setOpen] = useState<string | null>(defaultOpen || null);
   return (
     <AccordionContext.Provider value={{ open, setOpen }}>
-      <div className="divide-y divide-slate-200">{children}</div>
+      <div className="divide-y divide-[var(--border)]">{children}</div>
     </AccordionContext.Provider>
   );
 }
@@ -48,11 +48,11 @@ export function AccordionTrigger({
     <button
       type="button"
       onClick={() => setOpen(isOpen ? null : value)}
-      className={`flex w-full items-center justify-between py-4 text-left font-medium text-slate-900 hover:text-[#065F46] transition ${className}`}
+      className={`flex w-full items-center justify-between py-4 text-left font-medium text-[var(--text)] hover:text-emerald-700 dark:hover:text-emerald-400 transition ${className}`}
     >
       {children}
       <ChevronDown
-        className={`h-5 w-5 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+        className={`h-5 w-5 text-[var(--muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`}
       />
     </button>
   );
@@ -67,5 +67,5 @@ export function AccordionContent({
 }) {
   const { open } = useContext(AccordionContext);
   if (!open) return null;
-  return <div className={`pb-4 text-slate-600 ${className}`}>{children}</div>;
+  return <div className={`pb-4 text-[var(--muted)] ${className}`}>{children}</div>;
 }

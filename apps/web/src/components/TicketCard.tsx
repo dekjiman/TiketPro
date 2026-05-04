@@ -43,7 +43,7 @@ interface TicketCardProps {
   ticket: {
     id: string;
     ticketCode: string;
-    status: 'ACTIVE' | 'USED' | 'REFUNDED' | 'CANCELLED' | 'TRANSFERRED';
+    status: 'ACTIVE' | 'CHECKIN' | 'USED' | 'REFUNDED' | 'CANCELLED' | 'TRANSFERRED';
     holderName: string;
     isInternal: boolean;
     category: { name: string; colorHex?: string };
@@ -77,7 +77,8 @@ function formatTime(date: string): string {
 
 const statusConfig = {
   ACTIVE: { label: 'Aktif', className: 'bg-green-100 text-green-800 border-green-200' },
-  USED: { label: 'Digunakan', className: 'bg-gray-100 text-gray-800 border-gray-200' },
+  CHECKIN: { label: 'Checkin', className: 'bg-gray-100 text-gray-800 border-gray-200' },
+  USED: { label: 'Checkin', className: 'bg-gray-100 text-gray-800 border-gray-200' },
   REFUNDED: { label: 'Refund', className: 'bg-red-100 text-red-800 border-red-200' },
   CANCELLED: { label: 'Batal', className: 'bg-red-100 text-red-800 border-red-200' },
   TRANSFERRED: { label: 'Transfer', className: 'bg-blue-100 text-blue-800 border-blue-200' },
@@ -98,7 +99,7 @@ export function TicketCard({
   const [qrVisible, setQrVisible] = useState(false);
 
   const status = statusConfig[ticket.status] || statusConfig.ACTIVE;
-  const isUsed = ticket.status === 'USED';
+  const isUsed = ticket.status === 'USED' || ticket.status === 'CHECKIN';
   const isRefunded = ticket.status === 'REFUNDED';
   const isCancelled = ticket.status === 'CANCELLED';
   const isTransferable = ticket.status === 'ACTIVE' && !ticket.isInternal;
@@ -114,7 +115,7 @@ export function TicketCard({
       link?.focus();
       toast.success('PDF downloaded');
     } catch (err) {
-      toast.error(getApiError(err).message || 'Gagal download');
+      toast.error(getApiError(err).error || 'Gagal download');
     } finally {
       setLoading(false);
     }
@@ -127,7 +128,7 @@ export function TicketCard({
       toast.success(`Tiket dikirim via ${channel === 'both' ? 'email & WhatsApp' : channel}`);
       setResendDialogOpen(false);
     } catch (err) {
-      toast.error(getApiError(err).message || 'Gagal mengirim');
+      toast.error(getApiError(err).error || 'Gagal mengirim');
     } finally {
       setLoading(false);
     }
@@ -152,7 +153,7 @@ export function TicketCard({
       <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
         <div
           className="h-1"
-          style={{ backgroundColor: ticket.category.colorHex || '#065F46' }}
+          style={{ backgroundColor: ticket.category.colorHex || 'var(--primary)' }}
         />
 
         <div className="p-4">
@@ -179,9 +180,9 @@ export function TicketCard({
               <p className="text-sm text-gray-500">
                 {formatDate(ticket.event.startDate)} • {formatTime(ticket.event.startDate)}
               </p>
-               {(ticket.event.venues?.[0]?.name || ticket.event.venues?.[0]?.city) && (
+               {(ticket.event.venue?.name || ticket.event.venue?.city) && (
                  <p className="text-sm text-gray-500">
-                   {[ticket.event.venues?.[0]?.name, ticket.event.venues?.[0]?.city].filter(Boolean).join(', ')}
+                   {[ticket.event.venue?.name, ticket.event.venue?.city].filter(Boolean).join(', ')}
                  </p>
                )}
             </div>
@@ -218,7 +219,7 @@ export function TicketCard({
             )}
             {isUsed && ticket.usedAt && (
               <div className="text-xs text-gray-500">
-                Digunakan: {formatDate(ticket.usedAt)} {formatTime(ticket.usedAt)}
+                Checkin: {formatDate(ticket.usedAt)} {formatTime(ticket.usedAt)}
               </div>
             )}
           </div>
@@ -256,7 +257,7 @@ export function TicketCard({
 
           <Dialog open={qrModalOpen} onOpenChange={setQrModalOpen}>
             <DialogTrigger asChild>
-              <Button variant="link" size="sm" className="w-full mb-4 text-gray-500">
+              <Button variant="ghost" size="sm" className="w-full mb-4 text-gray-500">
                 Tampilkan QR Code
               </Button>
             </DialogTrigger>
@@ -399,7 +400,7 @@ export function TicketCard({
             {(isUsed || isRefunded || isCancelled) && (
               <p className="w-full text-xs text-gray-500 text-center pt-2">
                 {isUsed && ticket.usedAt
-                  ? `Digunakan pada ${formatDate(ticket.usedAt)}`
+                  ? `Checkin pada ${formatDate(ticket.usedAt)}`
                   : isRefunded
                   ? 'Sudah di-refund'
                   : 'Tiket dibatalkan'}

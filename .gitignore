@@ -1,8 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
 
 # Environment variables
 .env
@@ -16,6 +13,8 @@ build/
 out/
 .next/
 .turbo/
+dist-tsc/
+*.tsbuildinfo
 
 # IDE / Editor
 .vscode/
@@ -59,10 +58,24 @@ dump.rdb
 # Uploads
 public/uploads/*
 !public/uploads/.gitkeep
+apps/api/public/uploads/*
+!apps/api/public/uploads/.gitkeep
+apps/api/public/qr/*
+!apps/api/public/qr/.gitkeep
+apps/api/public/tickets/*
+!apps/api/public/tickets/.gitkeep
 
 # Temporary files
 *.tmp
 .cache/
+.kilo/
+*.tmp.*
+apps/api/.codex_tmp_*
+apps/api/scratch/
+apps/api/run.out
+apps/api/run.err
+apps/api/run.log
+apps/api/api.log
 
 # IDE Extensions
 .vscode/extensions/

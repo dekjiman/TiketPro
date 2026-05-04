@@ -5,6 +5,11 @@
 :root {
   --primary: #065F46;
   --primary-hover: #054d3a;
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --text: #1e293b;
+  --muted: #64748b;
+  --border: #e2e8f0;
   --secondary: #64748B;
   --tertiary: #D97706;
   --neutral: #F8FAFC;
@@ -21,16 +26,29 @@
   --gray-900: #0F172A;
 }
 
+.dark {
+  --bg: #020617;
+  --surface: #0f172a;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --border: #1e293b;
+}
+
 * {
   box-sizing: border-box;
 }
 
+html {
+  background-color: var(--bg);
+}
+
 body {
   font-family: 'Inter', system-ui, sans-serif;
-  background-color: var(--gray-50);
-  color: var(--gray-800);
+  background-color: var(--bg);
+  color: var(--text);
   margin: 0;
   padding: 0;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 h1, h2, h3, h4, h5, h6 {

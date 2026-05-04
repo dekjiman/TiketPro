@@ -19,11 +19,17 @@ export default function VerifyEmailPage() {
   const [error, setError] = useState('');
   const [cooldown, setCooldown] = useState(0);
   const [resendLoading, setResendLoading] = useState(false);
+  const [devOtp, setDevOtp] = useState('');
 
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   useEffect(() => {
     inputRefs.current[0]?.focus();
+    const pendingOtp = localStorage.getItem('pending_otp') || '';
+    if (pendingOtp) {
+      setDevOtp(pendingOtp);
+      setOtp(pendingOtp.split('').slice(0, 6));
+    }
   }, []);
 
   useEffect(() => {
@@ -82,11 +88,14 @@ export default function VerifyEmailPage() {
         otp: otpString,
       });
 
-      localStorage.setItem('token', res.data.accessToken);
       localStorage.setItem('user', JSON.stringify(res.data.user));
+      localStorage.removeItem('pending_otp');
       setUser(res.data.user);
 
-      const redirectPath = redirect || (res.data.user.role === 'EO_ADMIN' ? '/eo' : '/dashboard');
+      const redirectPath =
+        res.data.user.status === 'PENDING_APPROVAL'
+          ? '/auth/pending-approval'
+          : (redirect || (res.data.user.role === 'EO_ADMIN' ? '/eo' : '/dashboard'));
       router.push(redirectPath);
     } catch (err) {
       const apiError = getApiError(err);
@@ -105,7 +114,12 @@ export default function VerifyEmailPage() {
 
     setResendLoading(true);
     try {
-      await api.post('/api/auth/resend-otp', { email });
+      const res = await api.post<{ devOtp?: string }>('/api/auth/resend-otp', { email });
+      if (res.data.devOtp) {
+        localStorage.setItem('pending_otp', res.data.devOtp);
+        setDevOtp(res.data.devOtp);
+        setOtp(res.data.devOtp.split('').slice(0, 6));
+      }
       setCooldown(60);
       setError('');
     } catch (err) {
@@ -124,8 +138,14 @@ export default function VerifyEmailPage() {
       </h1>
       <p className="text-slate-600 dark:text-slate-400 mb-8" style={{ fontFamily: 'Inter' }}>
         Kami telah mengirim kode verifikasi ke <br />
-        <span className="font-semibold text-[#065F46]">{email}</span>
+        <span className="font-semibold text-emerald-700 dark:text-emerald-400">{email}</span>
       </p>
+
+      {devOtp && (
+        <div className="mb-6 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-amber-700 dark:text-amber-300 text-sm">
+          Mode lokal aktif. Kode verifikasi sementara: <span className="font-semibold tracking-[0.25em]">{devOtp}</span>
+        </div>
+      )}
 
       {error && (
         <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-600 dark:text-red-400 text-sm">
@@ -149,10 +169,10 @@ export default function VerifyEmailPage() {
               disabled={loading}
               className={`
                 w-12 h-14 text-center text-xl font-bold rounded-lg border-2 transition-all
-                focus:outline-none focus:ring-2 focus:ring-[#065F46]/50 focus:border-[#065F46]
+                focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-600
                 bg-white dark:bg-slate-800
                 ${error ? 'border-red-500 bg-red-50 dark:bg-red-900/20' : 'border-slate-300 dark:border-slate-600'}
-                ${digit ? 'border-[#065F46] bg-emerald-50 dark:bg-emerald-900/20' : ''}
+                ${digit ? 'border-emerald-600 bg-emerald-50 dark:bg-emerald-900/20' : ''}
               `}
             />
           ))}
@@ -173,7 +193,7 @@ export default function VerifyEmailPage() {
             type="button"
             onClick={handleResend}
             disabled={resendLoading}
-            className="text-sm text-[#065F46] hover:underline disabled:opacity-50"
+            className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline disabled:opacity-50"
           >
             {resendLoading ? 'Mengirim...' : 'Kirim ulang kode'}
           </button>
@@ -181,7 +201,7 @@ export default function VerifyEmailPage() {
       </div>
 
       <p className="mt-8 text-center text-sm text-slate-600 dark:text-slate-300">
-        <Link href="/login" className="font-semibold text-[#065F46] hover:underline">
+        <Link href="/login" className="font-semibold text-emerald-700 dark:text-emerald-400 hover:underline">
           Kembali ke login
         </Link>
       </p>

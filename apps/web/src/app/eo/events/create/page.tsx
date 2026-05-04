@@ -5,9 +5,9 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api, getApiError } from '@/lib/api';
 import { Button, Input, Textarea, useToast } from '@/components/ui';
-import { 
-  ArrowLeft, Loader2, Plus, Info, Image as ImageIcon, 
-  Calendar, MapPin, UploadCloud, Trash2 
+import {
+  ArrowLeft, Loader2, Plus, Info, Image as ImageIcon,
+  Calendar, MapPin
 } from 'lucide-react';
 
 export default function CreateEventPage() {
@@ -26,13 +26,27 @@ export default function CreateEventPage() {
   
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [files, setFiles] = useState<{
+    poster: File | null;
+    gallery: File[];
+  }>({
+    poster: null,
+    gallery: [],
+  });
+  const [previews, setPreviews] = useState<{
+    poster: string;
+    gallery: string[];
+  }>({
+    poster: '',
+    gallery: [],
+  });
   const router = useRouter();
   const toast = useToast();
 
   // VALIDATION & AUTO LOGIC
   const isDateInvalid = useMemo(() => {
     if (!data.startDate || !data.endDate) return false;
-    return new Date(data.endDate) < new Date(data.startDate);
+    return new Date(data.endDate) <= new Date(data.startDate);
   }, [data.startDate, data.endDate]);
 
   const isMultiDay = useMemo(() => {
@@ -40,26 +54,87 @@ export default function CreateEventPage() {
     return new Date(data.startDate).toDateString() !== new Date(data.endDate).toDateString();
   }, [data.startDate, data.endDate]);
 
+  const handleFileChange = (type: 'poster', file: File | null) => {
+    setFiles((prev) => ({ ...prev, [type]: file }));
+    if (file) {
+      const localUrl = URL.createObjectURL(file);
+      setPreviews((prev) => ({ ...prev, [type]: localUrl }));
+    } else {
+      setPreviews((prev) => ({ ...prev, [type]: '' }));
+    }
+  };
+
+  const uploadEventImage = async (eventId: string, type: 'poster', file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await api.post(`/api/events/${eventId}/upload/${type}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data?.url as string | undefined;
+  };
+
+  const uploadGalleryImage = async (eventId: string, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await api.post(`/api/events/${eventId}/upload/gallery`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data?.url as string | undefined;
+  };
+
   const handleCreate = async () => {
+    if (saving) return;
     // Client Side Validation
-    if (data.title.length < 3) {
+    if (data.title.trim().length < 3) {
       setError('Judul minimal 3 karakter');
       return;
     }
-    if (!data.city) {
+    if (!data.city.trim()) {
       setError('Kota wajib diisi');
       return;
     }
+    if (!data.startDate || !data.endDate) {
+      setError('Tanggal mulai dan selesai wajib diisi');
+      return;
+    }
     if (isDateInvalid) {
-      setError('Tanggal selesai tidak boleh sebelum tanggal mulai');
+      setError('Tanggal selesai harus setelah tanggal mulai');
       return;
     }
 
     setSaving(true);
     setError('');
     try {
-      const res = await api.post('/api/events', data);
+      const startIso = new Date(data.startDate).toISOString();
+      const endIso = new Date(data.endDate).toISOString();
+      const payload = {
+        ...data,
+        title: data.title.trim(),
+        shortDescription: data.shortDescription.trim(),
+        description: data.description.trim(),
+        startDate: startIso,
+        endDate: endIso,
+        city: data.city.trim(),
+        province: data.province.trim(),
+      };
+      const res = await api.post('/api/events', payload);
       const newEvent = res.data;
+
+      const uploadTasks: Array<Promise<any>> = [];
+      if (files.poster) uploadTasks.push(uploadEventImage(newEvent.id, 'poster', files.poster));
+      if (files.gallery.length > 0) {
+        for (const image of files.gallery) {
+          uploadTasks.push(uploadGalleryImage(newEvent.id, image));
+        }
+      }
+      if (uploadTasks.length > 0) {
+        try {
+          await Promise.all(uploadTasks);
+        } catch {
+          toast.showToast('warning', 'Event dibuat, tetapi sebagian gambar gagal di-upload. Silakan cek di halaman Manage.');
+        }
+      }
+
       toast.showToast('success', 'Event berhasil dibuat!');
       router.push(`/eo/events/${newEvent.id}/manage`);
     } catch (err: any) {
@@ -67,15 +142,6 @@ export default function CreateEventPage() {
     } finally {
       setSaving(false);
     }
-  };
-
-  const uploadImage = async (file: File, type: 'poster' | 'banner' | 'thumbnail') => {
-    toast.showToast('info', `Simulasi upload ${type}...`);
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setData({ ...data, [`${type}Url`]: reader.result as string });
-    };
-    reader.readAsDataURL(file);
   };
 
   return (
@@ -136,31 +202,86 @@ export default function CreateEventPage() {
             </div>
             <h2 className="text-xl font-bold">2. Media</h2>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {['poster', 'banner', 'thumbnail'].map((type) => (
-              <div key={type} className="space-y-2">
-                <label className="text-sm font-bold capitalize">{type}</label>
-                <div className="relative group">
-                  {(data as any)[`${type}Url`] ? (
-                    <div className="relative rounded-xl overflow-hidden aspect-[3/4] md:aspect-square bg-slate-100">
-                      <img src={(data as any)[`${type}Url`]} alt={type} className="w-full h-full object-cover" />
-                      <button 
-                        onClick={() => setData({ ...data, [`${type}Url`]: '' })}
-                        className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ) : (
-                    <label className="flex flex-col items-center justify-center aspect-[3/4] md:aspect-square rounded-xl border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-emerald-500 cursor-pointer transition-all bg-slate-50 dark:bg-slate-900/50">
-                      <input type="file" className="hidden" accept="image/*" onChange={e => e.target.files?.[0] && uploadImage(e.target.files[0], type as any)} />
-                      <UploadCloud className="w-8 h-8 text-slate-400 mb-2" />
-                      <span className="text-xs text-slate-500 font-medium text-center px-4">Pilih Gambar</span>
-                    </label>
-                  )}
+          <div className="mb-5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4">
+            <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Upload Poster</p>
+            <p className="text-xs text-slate-500 mt-1">
+              Fokus halaman ini hanya poster agar flow lebih jelas. Banner dan thumbnail bisa Anda atur di halaman Manage Event.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <label className="text-sm font-bold">Poster</label>
+              <label className="block">
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => handleFileChange('poster', e.target.files?.[0] || null)}
+                />
+                <div className="cursor-pointer rounded-lg border border-dashed border-slate-300 dark:border-slate-600 px-3 py-2 text-xs text-slate-600 dark:text-slate-300 hover:border-emerald-500 hover:text-emerald-600 transition-colors">
+                  Pilih file poster
                 </div>
-              </div>
-            ))}
+              </label>
+              <Input
+                placeholder="https://.../poster.jpg"
+                value={data.posterUrl}
+                onChange={e => setData({ ...data, posterUrl: e.target.value.trim() })}
+              />
+              {previews.poster || data.posterUrl ? (
+                <div className="relative rounded-xl overflow-hidden aspect-[3/4] bg-slate-100">
+                  <img src={previews.poster || data.posterUrl} alt="poster" className="w-full h-full object-cover" />
+                </div>
+              ) : (
+                <div className="flex items-center justify-center aspect-[3/4] rounded-xl border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 text-xs text-slate-500">
+                  Poster belum dipilih
+                </div>
+              )}
+            </div>
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/40 p-4">
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Gallery Carousel (Multiple Image)</p>
+              <label className="block">
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const selected = Array.from(e.target.files || []);
+                    setFiles((prev) => ({ ...prev, gallery: selected }));
+                    setPreviews((prev) => ({
+                      ...prev,
+                      gallery: selected.map((file) => URL.createObjectURL(file)),
+                    }));
+                  }}
+                />
+                <div className="cursor-pointer rounded-lg border border-dashed border-slate-300 dark:border-slate-600 px-3 py-2 text-xs text-slate-600 dark:text-slate-300 hover:border-emerald-500 hover:text-emerald-600 transition-colors">
+                  Pilih multiple image gallery
+                </div>
+              </label>
+              <p className="text-xs text-slate-500 mt-2">
+                {files.gallery.length > 0
+                  ? `${files.gallery.length} gambar dipilih untuk carousel`
+                  : 'Belum ada gambar gallery dipilih'}
+              </p>
+              {files.gallery.length > 0 && (
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  {files.gallery.slice(0, 6).map((file, idx) => (
+                    <div key={`${file.name}-${idx}`} className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden">
+                      <div className="aspect-square bg-slate-100 dark:bg-slate-900">
+                        <img
+                          src={previews.gallery[idx]}
+                          alt={file.name}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <div className="px-2 py-1 text-[10px] truncate">
+                        {file.name}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

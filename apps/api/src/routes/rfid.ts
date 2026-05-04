@@ -45,12 +45,15 @@ export async function rfidRoutes(fastify: FastifyInstance) {
       return reply.code(400).send({ valid: false, error: 'Invalid or inactive card' });
     }
 
-    if (card.ticket?.status === 'USED') {
+    if (card.ticket?.status === 'CHECKIN') {
       return reply.code(400).send({ valid: false, error: 'Ticket already used' });
     }
 
-    if (card.ticket) {
-      await prisma.ticket.update({ where: { id: card.ticketId }, data: { status: 'USED', checkedInAt: new Date() } });
+    if (card.ticketId) {
+      await prisma.ticket.update({
+        where: { id: card.ticketId },
+        data: { status: 'CHECKIN', usedAt: new Date(), usedGateId: gateId },
+      });
     }
 
     await prisma.rfidScanLog.create({

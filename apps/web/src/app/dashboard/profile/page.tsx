@@ -45,7 +45,7 @@ export default function DashboardProfilePage() {
     <div className="max-w-2xl mx-auto py-8 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Profil</h1>
-        <Link href="/profile" className="text-sm text-[#065F46] hover:underline">
+        <Link href="/profile" className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline">
           Lihat Profil Lengkap
         </Link>
       </div>

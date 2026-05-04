@@ -11,6 +11,37 @@ interface VenueFormProps {
   onUpdate?: () => void;
 }
 
+function normalizeMapUrl(raw?: string) {
+  if (!raw) return '';
+  const value = raw.trim();
+  if (!value) return '';
+
+  const iframeMatch = value.match(/<iframe[^>]*\ssrc=["']([^"']+)["']/i);
+  const extracted = iframeMatch?.[1]?.trim() || value;
+
+  const absoluteUrl = /^https?:\/\//i.test(extracted)
+    ? extracted
+    : /^www\./i.test(extracted)
+      ? `https://${extracted}`
+      : '';
+
+  if (!absoluteUrl) return '';
+
+  // Google embed URLs are iframe-only; convert them to a normal maps link.
+  try {
+    const url = new URL(absoluteUrl);
+    if (url.hostname.includes('google.') && url.pathname.includes('/maps/embed')) {
+      const pb = url.searchParams.get('pb');
+      if (pb) return `https://www.google.com/maps?q=${encodeURIComponent(pb)}`;
+      return 'https://www.google.com/maps';
+    }
+  } catch {
+    return '';
+  }
+
+  return absoluteUrl;
+}
+
 export function VenueForm({ initialData, eventId, onUpdate }: VenueFormProps) {
   const [data, setData] = useState(initialData || {
     name: '',
@@ -71,7 +102,23 @@ export function VenueForm({ initialData, eventId, onUpdate }: VenueFormProps) {
       if (data.province?.trim()) payload.province = data.province.trim();
       if (data.latitude) payload.latitude = parseFloat(data.latitude);
       if (data.longitude) payload.longitude = parseFloat(data.longitude);
-      if (data.mapUrl?.trim()) payload.mapUrl = data.mapUrl.trim();
+      if (data.mapUrl?.trim()) {
+        const rawMapUrl = data.mapUrl.trim();
+        let normalizedMapUrl = normalizeMapUrl(rawMapUrl);
+        const isEmbedInput = /<iframe/i.test(rawMapUrl) || /\/maps\/embed/i.test(rawMapUrl);
+        if (isEmbedInput) {
+          const query = [data.name, data.address, data.city].filter(Boolean).join(', ').trim();
+          normalizedMapUrl = query
+            ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`
+            : 'https://www.google.com/maps';
+        }
+        if (!normalizedMapUrl) {
+          toast.showToast('error', 'URL Google Maps tidak valid. Gunakan link maps langsung atau embed iframe yang valid.');
+          setSaving(false);
+          return;
+        }
+        payload.mapUrl = normalizedMapUrl;
+      }
       if (data.facilities?.trim()) payload.facilities = data.facilities.trim();
       if (data.notes?.trim()) payload.notes = data.notes.trim();
       await api.patch(`/api/events/${eventId}/venue`, payload);

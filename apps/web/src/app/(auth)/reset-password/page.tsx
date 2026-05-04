@@ -71,7 +71,7 @@ export default function ResetPasswordPage() {
         <div className="p-4 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg text-emerald-600 dark:text-emerald-400 text-sm mb-6">
           Semua sesi login telah di-logout untuk keamanan.
         </div>
-        <Link href="/login" className="block text-center text-sm font-semibold text-[#065F46] hover:underline">
+        <Link href="/login" className="block text-center text-sm font-semibold text-emerald-700 dark:text-emerald-400 hover:underline">
           Login dengan password baru
         </Link>
       </div>
@@ -90,7 +90,7 @@ export default function ResetPasswordPage() {
         <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-600 dark:text-red-400 text-sm mb-6">
           Silakan minta link reset password ulang.
         </div>
-        <Link href="/forgot-password" className="block text-center text-sm font-semibold text-[#065F46] hover:underline">
+        <Link href="/forgot-password" className="block text-center text-sm font-semibold text-emerald-700 dark:text-emerald-400 hover:underline">
           Minta Link Reset Ulang
         </Link>
       </div>

@@ -1,7 +1,29 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios';
 import { getLocalizedError } from './errors';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+export function getApiUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+
+  if (typeof window !== 'undefined') {
+    // Prefer same-origin API so Next.js rewrites can proxy `/api/*` to the backend.
+    // This avoids broken calls like `https://<ngrok-domain>:4000` (port not forwarded).
+    if (envUrl) {
+      try {
+        const parsed = new URL(envUrl);
+        const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+        if (!isLocalhost) return envUrl;
+      } catch {
+        // If envUrl isn't a valid URL, ignore and fall back to same-origin.
+      }
+    }
+    return window.location.origin;
+  }
+
+  if (envUrl) return envUrl;
+  return 'http://localhost:4000';
+}
+
+export const API_URL = getApiUrl();
 
 export interface ApiError {
   error: string;
@@ -40,12 +62,6 @@ export const api: AxiosInstance = axios.create({
 
 api.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    if (typeof window !== 'undefined' && !config.headers.Authorization) {
-      const token = localStorage.getItem('token');
-      if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-      }
-    }
     return config;
   },
   (error) => Promise.reject(error)
@@ -55,14 +71,26 @@ api.interceptors.response.use(
   (response: AxiosResponse) => response,
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    const requestUrl = originalRequest?.url || '';
+    const isAuthRefreshCall = requestUrl.includes('/api/auth/refresh');
+    const isAuthLogoutCall = requestUrl.includes('/api/auth/logout');
+    const isAuthMeCall = requestUrl.includes('/api/auth/me');
+    const isPublicAuthCall =
+      requestUrl.includes('/api/auth/login') ||
+      requestUrl.includes('/api/auth/register') ||
+      requestUrl.includes('/api/auth/verify-email') ||
+      requestUrl.includes('/api/auth/resend-otp') ||
+      requestUrl.includes('/api/auth/forgot-password') ||
+      requestUrl.includes('/api/auth/reset-password') ||
+      requestUrl.includes('/api/auth/google');
+    const shouldSkipRefresh = isAuthRefreshCall || isAuthLogoutCall || isAuthMeCall || isPublicAuthCall;
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    if (error.response?.status === 401 && !originalRequest._retry && !shouldSkipRefresh) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
         })
           .then((token) => {
-            originalRequest.headers.Authorization = `Bearer ${token}`;
             return api(originalRequest);
           })
           .catch((err) => Promise.reject(err));
@@ -74,17 +102,11 @@ api.interceptors.response.use(
       try {
         const response = await api.post<RefreshResponse>('/api/auth/refresh');
         const { accessToken } = response.data;
-        localStorage.setItem('token', accessToken);
         processQueue(accessToken, undefined);
-        originalRequest.headers.Authorization = `Bearer ${accessToken}`;
         return api(originalRequest);
       } catch (refreshError) {
         processQueue(null, refreshError as AxiosError);
-        localStorage.removeItem('token');
         localStorage.removeItem('user');
-        if (typeof window !== 'undefined') {
-          window.location.href = '/login';
-        }
         return Promise.reject(refreshError);
       } finally {
         isRefreshing = false;

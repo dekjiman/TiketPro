@@ -9,7 +9,7 @@ export default function AffiliateDashboardPage() {
   return (
     <div className="space-y-6">
       {/* Welcome */}
-      <div className="bg-gradient-to-r from-[#065F46] to-emerald-600 rounded-2xl p-6 lg:p-8 text-white">
+      <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 rounded-2xl p-6 lg:p-8 text-white">
         <p className="text-emerald-100 text-sm mb-1">Affiliate Dashboard</p>
         <h1 className="text-2xl lg:text-3xl font-bold mb-2" style={{ fontFamily: 'Manrope' }}>
           Welcome, {user?.name?.split(' ')[0]}!
@@ -44,7 +44,7 @@ export default function AffiliateDashboardPage() {
           <h2 className="font-semibold text-slate-900 dark:text-white" style={{ fontFamily: 'Manrope' }}>
             Link Saya
           </h2>
-          <button className="text-sm text-[#065F46] hover:underline">+ Buat Link</button>
+          <button className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline">+ Buat Link</button>
         </div>
         <div className="text-center py-8">
           <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center mx-auto mb-3">

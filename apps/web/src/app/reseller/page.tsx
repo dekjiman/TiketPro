@@ -9,7 +9,7 @@ export default function ResellerDashboardPage() {
   return (
     <div className="space-y-6">
       {/* Welcome */}
-      <div className="bg-gradient-to-r from-[#065F46] to-emerald-600 rounded-2xl p-6 lg:p-8 text-white">
+      <div className="bg-gradient-to-r from-emerald-700 to-emerald-600 rounded-2xl p-6 lg:p-8 text-white">
         <p className="text-emerald-100 text-sm mb-1">Reseller Dashboard</p>
         <h1 className="text-2xl lg:text-3xl font-bold mb-2" style={{ fontFamily: 'Manrope' }}>
           Welcome, {user?.name?.split(' ')[0]}!
@@ -45,7 +45,7 @@ export default function ResellerDashboardPage() {
           <h2 className="font-semibold text-slate-900 dark:text-white" style={{ fontFamily: 'Manrope' }}>
             Pesanan Terbaru
           </h2>
-          <button className="text-sm text-[#065F46] hover:underline">Lihat Semua</button>
+          <button className="text-sm text-emerald-700 dark:text-emerald-400 hover:underline">Lihat Semua</button>
         </div>
         <div className="text-center py-8">
           <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center mx-auto mb-3">

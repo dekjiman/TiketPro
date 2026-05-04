@@ -1,20 +1,22 @@
 'use client';
 
 import { forwardRef, ButtonHTMLAttributes } from 'react';
+import { Slot } from '@radix-ui/react-slot';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
   size?: 'sm' | 'md' | 'lg';
   loading?: boolean;
   fullWidth?: boolean;
+  asChild?: boolean;
 }
 
 const variants = {
-  primary: 'bg-[#065F46] text-white hover:opacity-90',
-  secondary: 'bg-[#64748B] text-white hover:opacity-90',
-  outline: 'border-2 border-[#065F46] text-[#065F46] hover:bg-[#065F46] hover:text-white',
-  ghost: 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800',
-  danger: 'bg-red-600 text-white hover:bg-red-700',
+  primary: 'bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]',
+  secondary: 'bg-slate-600 text-white hover:bg-slate-700 dark:bg-slate-500 dark:hover:bg-slate-400',
+  outline: 'border border-[var(--border)] text-[var(--text)] bg-[var(--surface)] hover:bg-slate-100 dark:hover:bg-slate-800',
+  ghost: 'text-[var(--text)] hover:bg-slate-100 dark:hover:bg-slate-800',
+  danger: 'bg-red-600 text-white hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600',
 };
 
 const sizes = {
@@ -24,19 +26,34 @@ const sizes = {
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ variant = 'primary', size = 'md', loading, fullWidth, className = '', children, disabled, ...props }, ref) => {
+  ({ variant = 'primary', size = 'md', loading, fullWidth, asChild, className = '', children, disabled, ...props }, ref) => {
+    const baseClassName = `
+      inline-flex items-center justify-center gap-2 font-semibold rounded-lg transition-all
+      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40
+      disabled:opacity-50 disabled:cursor-not-allowed
+      ${variants[variant]}
+      ${sizes[size]}
+      ${fullWidth ? 'w-full' : ''}
+      ${className}
+    `;
+
+    if (asChild) {
+      return (
+        <Slot
+          ref={ref}
+          className={baseClassName}
+          {...props}
+        >
+          {children}
+        </Slot>
+      );
+    }
+
     return (
       <button
         ref={ref}
         disabled={disabled || loading}
-        className={`
-          inline-flex items-center justify-center gap-2 font-semibold rounded-lg transition-all
-          disabled:opacity-50 disabled:cursor-not-allowed
-          ${variants[variant]}
-          ${sizes[size]}
-          ${fullWidth ? 'w-full' : ''}
-          ${className}
-        `}
+        className={baseClassName}
         {...props}
       >
         {loading && (

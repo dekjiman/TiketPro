@@ -101,10 +101,12 @@ export async function generateQrImage(encoded: string): Promise<Buffer> {
 export function verifyQrSignature(payload: QrPayload): boolean {
   const { sig, ...withoutSig } = payload;
   const computedSig = signPayload(withoutSig);
-  if (sig.length !== computedSig.length) {
+  const legacyComputedSig = signPayload({ ...withoutSig, sig: '' } as any);
+  if (sig.length !== computedSig.length || sig.length !== legacyComputedSig.length) {
     return false;
   }
   const sigBuffer = Buffer.from(sig);
   const computedBuffer = Buffer.from(computedSig);
-  return crypto.timingSafeEqual(sigBuffer, computedBuffer);
+  const legacyComputedBuffer = Buffer.from(legacyComputedSig);
+  return crypto.timingSafeEqual(sigBuffer, computedBuffer) || crypto.timingSafeEqual(sigBuffer, legacyComputedBuffer);
 }

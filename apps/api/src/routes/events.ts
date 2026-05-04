@@ -7,23 +7,54 @@ import { pipeline } from 'stream/promises';
 import sharp from 'sharp';
 import { authenticate } from './auth.js';
 import { initStock } from '../services/redis.js';
+import { redis } from '../services/redis.js';
 
 const prisma = new PrismaClient();
+type AuditActor = { id: string; role?: string };
 
-const eventSchema = z.object({
-  title: z.string().min(3),
-  shortDescription: z.string().optional(),
-  description: z.string().optional(),
-  startDate: z.string(),
-  endDate: z.string(),
-  city: z.string(),
-  province: z.string().optional(),
+async function logSuperAdminAction(actor: AuditActor, action: string, targetId: string, ipAddress: string, meta: Record<string, unknown> = {}) {
+  if (actor.role !== 'SUPER_ADMIN') return;
+  await prisma.auditLog.create({
+    data: {
+      userId: targetId,
+      actorId: actor.id,
+      event: action,
+      level: 'WARN',
+      ipAddress,
+      meta: JSON.stringify(meta),
+    },
+  });
+}
+
+const baseEventSchema = z.object({
+  title: z.string().min(3).max(180),
+  shortDescription: z.string().max(500).optional(),
+  description: z.string().max(10000).optional(),
+  startDate: z.string().datetime(),
+  endDate: z.string().datetime(),
+  city: z.string().min(1).max(120),
+  province: z.string().max(120).optional(),
   posterUrl: z.string().optional(),
   bannerUrl: z.string().optional(),
   thumbnailUrl: z.string().optional(),
 });
 
-const updateEventSchema = eventSchema.partial();
+const eventSchema = baseEventSchema.refine((data) => new Date(data.endDate) > new Date(data.startDate), {
+  message: 'endDate must be after startDate',
+  path: ['endDate'],
+});
+
+const updateEventSchema = baseEventSchema.partial().refine((data) => {
+  if (data.startDate && data.endDate) {
+    return new Date(data.endDate) > new Date(data.startDate);
+  }
+  return true;
+}, {
+  message: 'endDate must be after startDate',
+  path: ['endDate'],
+});
+const isBase64ImageDataUrl = (value?: string | null) =>
+  !!value && /^data:image\/[a-zA-Z0-9.+-]+;base64,/i.test(value.trim());
 
 const baseVenueSchema = z.object({
   name: z.string().min(3),
@@ -114,7 +145,7 @@ const rundownSchema = z.object({
 const ticketCategorySchema = z.object({
   name: z.string().min(2).max(100),
   price: z.number().int().min(0),
-  quota: z.number().int().min(0),
+  quota: z.number().int().positive(),
   description: z.string().optional(),
   saleStartAt: z.string().optional(),
   saleEndAt: z.string().optional(),
@@ -134,6 +165,21 @@ const ticketCategorySchema = z.object({
   path: ['saleEndAt'],
 });
 
+const galleryReorderSchema = z.object({
+  items: z.array(z.object({
+    id: z.string().min(1),
+    orderIndex: z.number().int().min(0),
+  })).min(1),
+});
+
+const galleryVideoSchema = z.object({
+  videoUrl: z.string().url(),
+});
+
+const eventCommentSchema = z.object({
+  message: z.string().min(1).max(2000),
+});
+
 const roleMap: Record<string, string> = {
   headliner: 'HEADLINER', main_act: 'HEADLINER', main: 'HEADLINER',
   supporting: 'SUPPORTING', opening: 'OPENING_ACT', opening_act: 'OPENING_ACT',
@@ -145,11 +191,88 @@ const normalizeRole = (role: string) => {
   return roleMap[key] || 'SUPPORTING';
 };
 
+async function resolveManagedEvent(eventId: string, user: any) {
+  const event = await (prisma as any).event.findUnique({
+    where: { id: eventId },
+    select: {
+      id: true,
+      eoId: true,
+      status: true,
+      title: true,
+      shortDescription: true,
+      description: true,
+      posterUrl: true,
+      startDate: true,
+      endDate: true,
+      publishedAt: true,
+    },
+  });
+
+  if (!event) return { event: null, authorized: false };
+  if (user.role === 'SUPER_ADMIN') return { event, authorized: true };
+
+  const eoProfile = await (prisma as any).eoProfile.findUnique({
+    where: { userId: user.id },
+    select: { id: true },
+  });
+
+  return { event, authorized: !!eoProfile && eoProfile.id === event.eoId };
+}
+
+async function createEventWithUniqueSlug(baseSlug: string, data: any, maxRetry = 6) {
+  let attempt = 0;
+  while (attempt <= maxRetry) {
+    const slug = attempt === 0 ? baseSlug : `${baseSlug}-${Math.random().toString(36).substring(2, 7)}`;
+    try {
+      return await (prisma as any).event.create({ data: { ...data, slug } });
+    } catch (error: any) {
+      if (error?.code === 'P2002' && attempt < maxRetry) {
+        attempt += 1;
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error('Failed to generate unique slug');
+}
+
+function userFavoriteKey(userId: string) {
+  return `favorites:events:${userId}`;
+}
+
+function readCookieValue(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null;
+  const cookies = cookieHeader.split(';');
+  for (const cookie of cookies) {
+    const [rawKey, ...rest] = cookie.trim().split('=');
+    if (rawKey === name) return decodeURIComponent(rest.join('='));
+  }
+  return null;
+}
+
+async function createNotifications(userIds: string[], payload: { type: string; title: string; body: string; data?: any }) {
+  if (!userIds.length) return;
+  await (prisma as any).notification.createMany({
+    data: userIds.map((userId) => ({
+      userId,
+      type: payload.type,
+      title: payload.title,
+      body: payload.body,
+      data: payload.data || null,
+    })),
+    skipDuplicates: false,
+  });
+}
+
 export async function eventRoutes(fastify: FastifyInstance) {
   // ========== IMAGE UPLOAD (REWORKED) ==========
   fastify.post('/:id/upload/:type', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const user = req.user as any;
-    const { id, type } = req.params as { id: string, type: 'poster' | 'banner' };
+    const { id, type } = req.params as { id: string, type: 'poster' | 'banner' | 'thumbnail' | 'gallery' };
+    const allowedTypes = new Set(['poster', 'banner', 'thumbnail', 'gallery']);
+    if (!allowedTypes.has(type)) {
+      return reply.code(400).send({ error: 'Invalid upload type', code: 'INVALID_UPLOAD_TYPE' });
+    }
 
     // Permissions check
     const isSuperAdmin = user.role === 'SUPER_ADMIN';
@@ -183,23 +306,164 @@ export async function eventRoutes(fastify: FastifyInstance) {
       return reply.code(400).send({ error: 'No file uploaded' });
     }
 
-    const fileName = `${id}-${type}-${Date.now()}.webp`;
     const uploadDir = path.join(process.cwd(), 'public/uploads');
-    const filePath = path.join(uploadDir, fileName);
+    await fs.mkdir(uploadDir, { recursive: true });
 
-    // Process image with Sharp
     const buffer = await data.toBuffer();
-    const sharpInstance = sharp(buffer);
+    const mimeType = data.mimetype || '';
+    const isVideoUpload = type === 'gallery' && mimeType.startsWith('video/');
     
     if (type === 'poster') {
+      const fileName = `${id}-${type}-${Date.now()}.webp`;
+      const filePath = path.join(uploadDir, fileName);
+      const sharpInstance = sharp(buffer);
       await sharpInstance.resize(800, 800, { fit: 'cover' }).webp().toFile(filePath);
       await (prisma as any).event.update({ where: { id }, data: { posterUrl: `/public/uploads/${fileName}` } });
-    } else {
+      return { url: `/public/uploads/${fileName}`, fileName };
+    } else if (type === 'banner') {
+      const fileName = `${id}-${type}-${Date.now()}.webp`;
+      const filePath = path.join(uploadDir, fileName);
+      const sharpInstance = sharp(buffer);
       await sharpInstance.resize(1200, 630, { fit: 'cover' }).webp().toFile(filePath);
       await (prisma as any).event.update({ where: { id }, data: { bannerUrl: `/public/uploads/${fileName}` } });
+      return { url: `/public/uploads/${fileName}`, fileName };
+    } else if (type === 'thumbnail') {
+      const fileName = `${id}-${type}-${Date.now()}.webp`;
+      const filePath = path.join(uploadDir, fileName);
+      const sharpInstance = sharp(buffer);
+      await sharpInstance.resize(600, 600, { fit: 'cover' }).webp().toFile(filePath);
+      await (prisma as any).event.update({ where: { id }, data: { thumbnailUrl: `/public/uploads/${fileName}` } });
+    } else {
+      let mediaUrl = '';
+      let fileName = '';
+
+      if (isVideoUpload) {
+        const allowedVideoMime = new Set(['video/mp4', 'video/webm', 'video/ogg']);
+        if (!allowedVideoMime.has(mimeType)) {
+          return reply.code(400).send({
+            error: 'Invalid video type. Allowed: MP4, WEBM, OGG',
+            code: 'INVALID_VIDEO_TYPE',
+          });
+        }
+
+        const ext = mimeType === 'video/webm' ? 'webm' : mimeType === 'video/ogg' ? 'ogg' : 'mp4';
+        fileName = `${id}-${type}-${Date.now()}.${ext}`;
+        const filePath = path.join(uploadDir, fileName);
+        await fs.writeFile(filePath, buffer);
+        mediaUrl = `/public/uploads/${fileName}`;
+      } else {
+        fileName = `${id}-${type}-${Date.now()}.webp`;
+        const filePath = path.join(uploadDir, fileName);
+        const sharpInstance = sharp(buffer);
+        await sharpInstance.resize(1600, 900, { fit: 'inside', withoutEnlargement: true }).webp().toFile(filePath);
+        mediaUrl = `/public/uploads/${fileName}`;
+      }
+
+      const latestImage = await (prisma as any).eventImage.findFirst({
+        where: { eventId: id },
+        orderBy: { orderIndex: 'desc' },
+        select: { orderIndex: true },
+      });
+      await (prisma as any).eventImage.create({
+        data: {
+          eventId: id,
+          imageUrl: mediaUrl,
+          orderIndex: (latestImage?.orderIndex || 0) + 1,
+        },
+      });
+      return { url: mediaUrl, fileName };
     }
 
-    return { url: `/public/uploads/${fileName}` };
+    return { ok: true };
+  });
+
+  // ========== GALLERY MANAGEMENT ==========
+  fastify.patch('/:id/gallery/reorder', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const user = req.user as any;
+    const parsed = galleryReorderSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Validation failed', code: 'VALIDATION_ERROR', details: parsed.error.flatten() });
+    }
+
+    const managed = await resolveManagedEvent(id, user);
+    if (!managed.event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+
+    const itemIds = parsed.data.items.map(i => i.id);
+    const existing = await (prisma as any).eventImage.findMany({
+      where: { eventId: id, id: { in: itemIds } },
+      select: { id: true },
+    });
+
+    if (existing.length !== itemIds.length) {
+      return reply.code(400).send({ error: 'Some gallery items are invalid', code: 'INVALID_GALLERY_ITEMS' });
+    }
+
+    await (prisma as any).$transaction(
+      parsed.data.items.map((item) =>
+        (prisma as any).eventImage.update({
+          where: { id: item.id },
+          data: { orderIndex: item.orderIndex },
+        })
+      )
+    );
+
+    const images = await (prisma as any).eventImage.findMany({
+      where: { eventId: id },
+      orderBy: { orderIndex: 'asc' },
+    });
+    return { data: images };
+  });
+
+  fastify.delete('/:id/gallery/:imageId', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id, imageId } = req.params as { id: string; imageId: string };
+    const user = req.user as any;
+
+    const managed = await resolveManagedEvent(id, user);
+    if (!managed.event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+
+    const existing = await (prisma as any).eventImage.findFirst({
+      where: { id: imageId, eventId: id },
+      select: { id: true },
+    });
+    if (!existing) return reply.code(404).send({ error: 'Gallery item not found', code: 'GALLERY_ITEM_NOT_FOUND' });
+
+    await (prisma as any).eventImage.delete({ where: { id: imageId } });
+
+    const images = await (prisma as any).eventImage.findMany({
+      where: { eventId: id },
+      orderBy: { orderIndex: 'asc' },
+    });
+    return { data: images };
+  });
+
+  fastify.post('/:id/gallery/video-url', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const user = req.user as any;
+    const parsed = galleryVideoSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Validation failed', code: 'VALIDATION_ERROR', details: parsed.error.flatten() });
+    }
+
+    const managed = await resolveManagedEvent(id, user);
+    if (!managed.event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+
+    const latestImage = await (prisma as any).eventImage.findFirst({
+      where: { eventId: id },
+      orderBy: { orderIndex: 'desc' },
+      select: { orderIndex: true },
+    });
+    const media = await (prisma as any).eventImage.create({
+      data: {
+        eventId: id,
+        imageUrl: parsed.data.videoUrl,
+        orderIndex: (latestImage?.orderIndex || 0) + 1,
+      },
+    });
+    return { data: media };
   });
 
   // ========== GET FULL EVENT DATA (FOR MANAGEMENT) ==========
@@ -212,14 +476,36 @@ export async function eventRoutes(fastify: FastifyInstance) {
 
         const event = await (prisma as any).event.findUnique({
             where: { id },
-            include: {
-                eo: true,
-                lineups: true,
-                rundowns: true,
-                categories: true,
-                venues: true, // Pastikan ini sudah sesuai schema terbaru
-                // Matikan dulu include yang lain untuk ngetes mana yang bikin berat/error
+        include: {
+            eo: true,
+            lineups: true,
+            rundowns: true,
+            categories: {
+                orderBy: { orderIndex: 'asc' },
+                select: {
+                    id: true,
+                    eventId: true,
+                    name: true,
+                    description: true,
+                    price: true,
+                    quota: true,
+                    sold: true,
+                    saleStartAt: true,
+                    saleEndAt: true,
+                    maxPerOrder: true,
+                    maxPerAccount: true,
+                    templateType: true,
+                    templateUrl: true,
+                    isInternal: true,
+                    colorHex: true,
+                    orderIndex: true,
+                    status: true,
+                },
             },
+            images: { orderBy: { orderIndex: 'asc' } },
+            venues: true, // Pastikan ini sudah sesuai schema terbaru
+            // Matikan dulu include yang lain untuk ngetes mana yang bikin berat/error
+        },
         });
 
         if (!event) return reply.code(404).send({ error: 'Event not found' });
@@ -249,27 +535,148 @@ export async function eventRoutes(fastify: FastifyInstance) {
     }
 });
 
+  // ========== EVENT COMMENTS (EO <-> ADMIN DISCUSSION) ==========
+  fastify.get('/:id/comments', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const user = req.user as any;
+    const event = await (prisma as any).event.findUnique({ where: { id }, select: { id: true, eoId: true } });
+    if (!event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+
+    let canAccess = user.role === 'SUPER_ADMIN';
+    if (!canAccess && user.role === 'EO_ADMIN') {
+      const eoProfile = await (prisma as any).eoProfile.findUnique({ where: { userId: user.id }, select: { id: true } });
+      canAccess = !!eoProfile && eoProfile.id === event.eoId;
+    }
+    if (!canAccess && user.role === 'EO_STAFF') {
+      const staffInvite = await (prisma as any).staffInvite.findFirst({
+        where: { email: user.email?.toLowerCase(), eoId: event.eoId, status: 'ACCEPTED' },
+      });
+      canAccess = !!staffInvite;
+    }
+    if (!canAccess) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+
+    const comments = await (prisma as any).eventComment.findMany({
+      where: { eventId: id },
+      include: { author: { select: { id: true, name: true, role: true, email: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    return { data: comments };
+  });
+
+  fastify.post('/:id/comments', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const user = req.user as any;
+    const parsed = eventCommentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Validation failed', code: 'VALIDATION_ERROR', details: parsed.error.flatten() });
+    }
+
+    const event = await (prisma as any).event.findUnique({
+      where: { id },
+      select: { id: true, eoId: true, title: true },
+    });
+    if (!event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+
+    let canAccess = user.role === 'SUPER_ADMIN';
+    if (!canAccess && user.role === 'EO_ADMIN') {
+      const eoProfile = await (prisma as any).eoProfile.findUnique({ where: { userId: user.id }, select: { id: true } });
+      canAccess = !!eoProfile && eoProfile.id === event.eoId;
+    }
+    if (!canAccess && user.role === 'EO_STAFF') {
+      const staffInvite = await (prisma as any).staffInvite.findFirst({
+        where: { email: user.email?.toLowerCase(), eoId: event.eoId, status: 'ACCEPTED' },
+      });
+      canAccess = !!staffInvite;
+    }
+    if (!canAccess) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+
+    const created = await (prisma as any).eventComment.create({
+      data: {
+        eventId: id,
+        authorId: user.id,
+        authorRole: user.role,
+        message: parsed.data.message.trim(),
+      },
+      include: { author: { select: { id: true, name: true, role: true, email: true } } },
+    });
+
+    // Notify opposite side:
+    // EO comments -> notify SUPER_ADMIN
+    // SUPER_ADMIN comments -> notify EO owner + accepted EO staff
+    if (user.role === 'SUPER_ADMIN') {
+      const eoProfile = await (prisma as any).eoProfile.findUnique({
+        where: { id: event.eoId },
+        select: { userId: true },
+      });
+      const staffInvites = await (prisma as any).staffInvite.findMany({
+        where: { eoId: event.eoId, status: 'ACCEPTED' },
+        select: { email: true },
+      });
+      const staffUsers = await (prisma as any).user.findMany({
+        where: { email: { in: staffInvites.map((s: any) => s.email) } },
+        select: { id: true },
+      });
+      const targetIds = Array.from(new Set([eoProfile?.userId, ...staffUsers.map((s: any) => s.id)].filter(Boolean)));
+      await createNotifications(targetIds as string[], {
+        type: 'EVENT_COMMENT_ADMIN',
+        title: `Komentar Admin pada Event: ${event.title}`,
+        body: parsed.data.message.trim().slice(0, 160),
+        data: { eventId: event.id },
+      });
+    } else {
+      const admins = await (prisma as any).user.findMany({
+        where: { role: 'SUPER_ADMIN', status: 'ACTIVE' },
+        select: { id: true },
+      });
+      await createNotifications(admins.map((a: any) => a.id), {
+        type: 'EVENT_COMMENT_EO',
+        title: `Komentar EO pada Event: ${event.title}`,
+        body: parsed.data.message.trim().slice(0, 160),
+        data: { eventId: event.id },
+      });
+    }
+
+    return { data: created };
+  });
+
   // ========== LIST EVENTS ==========
   fastify.get('/', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { city, status, search, page, limit } = req.query as any;
-    const where: any = {};
+    const { city, search, page, limit, offset } = req.query as any;
+    const where: any = { status: 'PUBLISHED' };
     
     if (city) where.city = city;
-    if (status) where.status = status;
     if (search) {
       where.OR = [
         { title: { contains: search, mode: 'insensitive' } },
       ];
     }
 
-    const pageNum = parseInt(page) || 1;
-    const limitNum = parseInt(limit) || 20;
-    const skip = (pageNum - 1) * limitNum;
+    const limitNum = Math.max(1, parseInt(limit) || 20);
+    const hasOffset = offset !== undefined && offset !== null && offset !== '';
+    const offsetNum = hasOffset ? Math.max(0, parseInt(offset) || 0) : 0;
+    const pageNum = hasOffset ? Math.floor(offsetNum / limitNum) + 1 : Math.max(1, parseInt(page) || 1);
+    const skip = hasOffset ? offsetNum : (pageNum - 1) * limitNum;
 
     const [events, total] = await Promise.all([
       (prisma as any).event.findMany({
         where,
-        include: { eo: { include: { user: { select: { name: true } } } }, categories: true },
+        select: {
+          id: true,
+          title: true,
+          slug: true,
+          shortDescription: true,
+          posterUrl: true,
+          bannerUrl: true,
+          thumbnailUrl: true,
+          startDate: true,
+          endDate: true,
+          city: true,
+          province: true,
+          status: true,
+          eo: { select: { id: true, companyName: true, user: { select: { name: true } } } },
+          categories: { where: { status: 'ACTIVE', isInternal: false }, orderBy: { orderIndex: 'asc' } },
+          images: { orderBy: { orderIndex: 'asc' } },
+        },
         orderBy: { startDate: 'asc' },
         skip,
         take: limitNum,
@@ -278,12 +685,15 @@ export async function eventRoutes(fastify: FastifyInstance) {
     ]);
     return {
       data: events,
+      // Backward compatibility for consumers still expecting `events`.
+      events,
       meta: {
         total,
         page: pageNum,
         limit: limitNum,
-        totalPages: Math.ceil(total / limitNum)
-      }
+        offset: skip,
+        totalPages: Math.ceil(total / limitNum),
+      },
     };
   });
 
@@ -292,31 +702,128 @@ export async function eventRoutes(fastify: FastifyInstance) {
   fastify.get('/:slugOrId', async (req: FastifyRequest, reply: FastifyReply) => {
     const { slugOrId } = req.params as any;
     try {
-      const event = await (prisma as any).event.findFirst({
+      let event = await (prisma as any).event.findFirst({
         where: {
+          status: 'PUBLISHED',
           OR: [{ slug: slugOrId }, { id: slugOrId }]
         },
-        include: {
+        select: {
+          id: true,
+          eoId: true,
+          title: true,
+          slug: true,
+          shortDescription: true,
+          description: true,
+          posterUrl: true,
+          bannerUrl: true,
+          thumbnailUrl: true,
+          startDate: true,
+          endDate: true,
+          isMultiDay: true,
+          city: true,
+          province: true,
+          status: true,
+          isFeatured: true,
+          publishedAt: true,
           eo: { select: { id: true, companyName: true, user: { select: { name: true } } } },
           venues: true,
           categories: {
             where: { isInternal: false },
             orderBy: { orderIndex: 'asc' }
           },
+          images: { orderBy: { orderIndex: 'asc' } },
           lineups: { orderBy: [{ dayIndex: 'asc' }, { orderIndex: 'asc' }] },
           rundowns: { orderBy: [{ dayIndex: 'asc' }, { startTime: 'asc' }] },
         }
       });
+
+      // Owner preview for unpublished events:
+      // EO Admin owner (and Super Admin) may access draft/review via public detail URL.
+      if (!event) {
+        const authHeader = req.headers.authorization;
+        const cookieToken = readCookieValue(req.headers.cookie, 'access_token');
+        const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.replace('Bearer ', '') : null;
+        const token = bearerToken || cookieToken;
+
+        if (token) {
+          try {
+            const decoded = fastify.jwt.verify(token) as { id: string; role: string; email?: string };
+            const candidate = await (prisma as any).event.findFirst({
+              where: { OR: [{ slug: slugOrId }, { id: slugOrId }] },
+              select: {
+                id: true,
+                eoId: true,
+                title: true,
+                slug: true,
+                shortDescription: true,
+                description: true,
+                posterUrl: true,
+                bannerUrl: true,
+                thumbnailUrl: true,
+                startDate: true,
+                endDate: true,
+                isMultiDay: true,
+                city: true,
+                province: true,
+                status: true,
+                isFeatured: true,
+                publishedAt: true,
+                eo: { select: { id: true, companyName: true, user: { select: { name: true } } } },
+                venues: true,
+                categories: {
+                  where: { isInternal: false },
+                  orderBy: { orderIndex: 'asc' }
+                },
+                images: { orderBy: { orderIndex: 'asc' } },
+                lineups: { orderBy: [{ dayIndex: 'asc' }, { orderIndex: 'asc' }] },
+                rundowns: { orderBy: [{ dayIndex: 'asc' }, { startTime: 'asc' }] },
+              }
+            });
+
+            if (candidate) {
+              let canPreview = decoded.role === 'SUPER_ADMIN';
+              if (!canPreview && decoded.role === 'EO_ADMIN') {
+                const eoProfile = await (prisma as any).eoProfile.findUnique({
+                  where: { userId: decoded.id },
+                  select: { id: true },
+                });
+                canPreview = !!eoProfile && eoProfile.id === candidate.eoId;
+              }
+
+              if (!canPreview && decoded.role === 'EO_STAFF') {
+                const staffInvite = await (prisma as any).staffInvite.findFirst({
+                  where: { email: decoded.email?.toLowerCase(), eoId: candidate.eoId, status: 'ACCEPTED' },
+                });
+                canPreview = !!staffInvite;
+              }
+
+              if (canPreview) {
+                event = candidate;
+              }
+            }
+          } catch {
+            // Ignore invalid token and continue 404.
+          }
+        }
+      }
+
       if (!event) return reply.code(404).send({ error: 'Event not found' });
 
       // Enrich categories with status
       const now = new Date();
       const enrichedCategories = (event.categories || []).map((cat: any) => {
+        const dbStatus = String(cat.status || '').toUpperCase();
         let status = 'AVAILABLE';
-        if (cat.saleStartAt && now < new Date(cat.saleStartAt)) status = 'UPCOMING';
+
+        // Respect real-time sale window first for preview/detail.
+        // DRAFT should not force UPCOMING when sale has started.
+        if (dbStatus === 'CLOSED') status = 'CLOSED';
+        else if (dbStatus === 'SOLD_OUT') status = 'SOLD_OUT';
+        else if (cat.saleStartAt && now < new Date(cat.saleStartAt)) status = 'UPCOMING';
         else if (cat.saleEndAt && now > new Date(cat.saleEndAt)) status = 'CLOSED';
         else if (cat.sold >= cat.quota) status = 'SOLD_OUT';
-        return { ...cat, status };
+
+        return { ...cat, isInternal: Boolean(cat.isInternal), status };
       });
 
       return {
@@ -328,6 +835,42 @@ export async function eventRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: error.message || 'Internal Server Error', code: 'INTERNAL_ERROR' });
     }
   });
+
+  // ========== EVENT FAVORITES (LOVE) ==========
+  fastify.get('/:id/favorite-status', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const user = req.user as any;
+    const { id } = req.params as any;
+
+    const event = await (prisma as any).event.findFirst({
+      where: { OR: [{ slug: id }, { id }] },
+      select: { id: true },
+    });
+    if (!event) return reply.code(404).send({ error: 'Event not found' });
+
+    const liked = (await redis.sismember(userFavoriteKey(user.id), event.id)) === 1;
+    return { eventId: event.id, liked };
+  });
+
+  fastify.post('/:id/favorite', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const user = req.user as any;
+    const { id } = req.params as any;
+
+    const event = await (prisma as any).event.findFirst({
+      where: { OR: [{ slug: id }, { id }] },
+      select: { id: true },
+    });
+    if (!event) return reply.code(404).send({ error: 'Event not found' });
+
+    const key = userFavoriteKey(user.id);
+    const currentlyLiked = (await redis.sismember(key, event.id)) === 1;
+    if (currentlyLiked) {
+      await redis.srem(key, event.id);
+    } else {
+      await redis.sadd(key, event.id);
+    }
+
+    return { eventId: event.id, liked: !currentlyLiked };
+  });
        
 
   // ========== CREATE EVENT ==========
@@ -337,7 +880,13 @@ export async function eventRoutes(fastify: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     }
 
-    const data = eventSchema.parse(req.body);
+      const data = eventSchema.parse(req.body);
+      if (isBase64ImageDataUrl(data.posterUrl) || isBase64ImageDataUrl(data.bannerUrl) || isBase64ImageDataUrl(data.thumbnailUrl)) {
+        return reply.code(400).send({
+          error: 'Image fields must be URL/path to uploaded .webp file, base64 is not allowed',
+          code: 'BASE64_IMAGE_NOT_ALLOWED',
+        });
+      }
     let eoProfile = await (prisma as any).eoProfile.findUnique({ where: { userId: user.id } });
     
     if (!eoProfile && user.role === 'EO_ADMIN') {
@@ -357,29 +906,20 @@ export async function eventRoutes(fastify: FastifyInstance) {
 
     // AUTO LOGIC: Slug generation
     const baseSlug = data.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-    let slug = baseSlug;
-    const existing = await (prisma as any).event.findUnique({ where: { slug } });
-    if (existing) {
-      slug = `${baseSlug}-${Math.random().toString(36).substring(2, 7)}`;
-    }
-
-    const event = await (prisma as any).event.create({
-      data: {
-        title: data.title,
-        shortDescription: data.shortDescription || '',
-        description: data.description || '',
-        slug,
-        posterUrl: data.posterUrl,
-        bannerUrl: data.bannerUrl,
-        thumbnailUrl: data.thumbnailUrl,
-        isMultiDay,
-        startDate: start,
-        endDate: end,
-        city: data.city,
-        province: data.province || '',
-        eoId: eoProfile.id,
-        status: 'DRAFT',
-      },
+    const event = await createEventWithUniqueSlug(baseSlug, {
+      title: data.title,
+      shortDescription: data.shortDescription || '',
+      description: data.description || '',
+      posterUrl: data.posterUrl,
+      bannerUrl: data.bannerUrl,
+      thumbnailUrl: data.thumbnailUrl,
+      isMultiDay,
+      startDate: start,
+      endDate: end,
+      city: data.city,
+      province: data.province || '',
+      eoId: eoProfile.id,
+      status: 'DRAFT',
     });
 
     return reply.code(201).send(event);
@@ -391,46 +931,44 @@ export async function eventRoutes(fastify: FastifyInstance) {
     const userId = (req.user as any).id;
     const userRole = (req.user as any).role;
 
-     // Check if the event exists and user has permission
-     const event = await (prisma as any).event.findUnique({ where: { id } });
-     if (!event) {
+     const managed = await resolveManagedEvent(id, req.user as any);
+     if (!managed.event) {
        return reply.code(404).send({ error: 'Event not found' });
      }
-
-     // Only EO owner, EO Staff, or SUPER_ADMIN can update
-     const isSuperAdmin = userRole === 'SUPER_ADMIN';
-     let isAuthorized = false;
-
-     if (isSuperAdmin) {
-       isAuthorized = true;
-     } else {
-       // Check if user is the EO_ADMIN (owner)
-       const eoProfile = await (prisma as any).eoProfile.findUnique({ where: { userId } });
-       if (eoProfile && event.eoId === eoProfile.id) {
-         isAuthorized = true;
-       } else if (userRole === 'EO_STAFF') {
-         const user = await (prisma as any).user.findUnique({ where: { id: userId } });
-         const staffInvite = await (prisma as any).staffInvite.findFirst({
-           where: { email: user.email, eoId: event.eoId, status: 'ACCEPTED' }
-         });
-         if (staffInvite) isAuthorized = true;
-       }
-     }
-
-     if (!isAuthorized) {
+     if (!managed.authorized) {
        return reply.code(403).send({ error: 'Unauthorized', message: 'You do not have permission to edit this event' });
      }
 
      const data = updateEventSchema.parse(req.body);
+     if (isBase64ImageDataUrl(data.posterUrl) || isBase64ImageDataUrl(data.bannerUrl) || isBase64ImageDataUrl(data.thumbnailUrl)) {
+       return reply.code(400).send({
+         error: 'Image fields must be URL/path to uploaded .webp file, base64 is not allowed',
+         code: 'BASE64_IMAGE_NOT_ALLOWED',
+       });
+     }
      const updateData: any = { ...data };
+     if (managed.event.status === 'PUBLISHED' && userRole !== 'SUPER_ADMIN') {
+       const restrictedFields = ['title', 'startDate', 'endDate', 'city', 'province'];
+       const attempted = restrictedFields.filter((field) => field in updateData);
+       if (attempted.length > 0) {
+         return reply.code(400).send({
+           error: 'Published event has restricted fields',
+           code: 'PUBLISHED_FIELD_RESTRICTED',
+           details: attempted,
+         });
+       }
+     }
      
      if (data.startDate) updateData.startDate = new Date(data.startDate);
      if (data.endDate) updateData.endDate = new Date(data.endDate);
 
      // Re-compute isMultiDay if any date is changed
      if (data.startDate || data.endDate) {
-       const start = updateData.startDate || new Date(event.startDate);
-       const end = updateData.endDate || new Date(event.endDate);
+       const start = updateData.startDate || new Date(managed.event.startDate);
+       const end = updateData.endDate || new Date(managed.event.endDate);
+       if (end <= start) {
+         return reply.code(400).send({ error: 'endDate must be after startDate', code: 'INVALID_DATE_RANGE' });
+       }
        updateData.isMultiDay = start.toDateString() !== end.toDateString();
      }
 
@@ -555,6 +1093,7 @@ export async function eventRoutes(fastify: FastifyInstance) {
     const { slugOrId } = req.params as any;
     const event = await (prisma as any).event.findFirst({
       where: {
+        status: 'PUBLISHED',
         OR: [
           { id: slugOrId },
           { slug: slugOrId },
@@ -570,6 +1109,10 @@ export async function eventRoutes(fastify: FastifyInstance) {
 
   fastify.delete('/:id/venue', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
+    const user = req.user as any;
+    const managed = await resolveManagedEvent(id, user);
+    if (!managed.event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     await (prisma as any).eventVenue.delete({ where: { eventId: id } }).catch(() => {});
     return { success: true };
   });
@@ -609,7 +1152,7 @@ export async function eventRoutes(fastify: FastifyInstance) {
   fastify.get('/:slugOrId/lineup', async (req: FastifyRequest, reply: FastifyReply) => {
     const { slugOrId } = req.params as any;
     const event = await (prisma as any).event.findFirst({
-      where: { OR: [{ slug: slugOrId }, { id: slugOrId }] },
+      where: { status: 'PUBLISHED', OR: [{ slug: slugOrId }, { id: slugOrId }] },
       select: { id: true },
     });
     if (!event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
@@ -782,6 +1325,65 @@ export async function eventRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // POST /events/:id/ticket-template/upload - Upload ticket template file
+  fastify.post('/:id/ticket-template/upload', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as { id: string };
+    const user = req.user as any;
+
+    const event = await (prisma as any).event.findUnique({ where: { id } });
+    if (!event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+
+    const eoProfile = await (prisma as any).eoProfile.findUnique({ where: { userId: user.id } });
+    let isAuthorized = false;
+    if (user.role === 'SUPER_ADMIN') {
+      isAuthorized = true;
+    } else if (eoProfile && event.eoId === eoProfile.id) {
+      isAuthorized = true;
+    } else if (user.role === 'EO_STAFF') {
+      const staffInvite = await (prisma as any).staffInvite.findFirst({
+        where: { email: user.email, eoId: event.eoId, status: 'ACCEPTED' }
+      });
+      if (staffInvite) isAuthorized = true;
+    }
+    if (!isAuthorized) {
+      return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
+
+    const data = await req.file();
+    if (!data) return reply.code(400).send({ error: 'No file uploaded', code: 'NO_FILE' });
+
+    const mimeType = data.mimetype || '';
+    const allowedMimeTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/webp'];
+    if (!allowedMimeTypes.includes(mimeType)) {
+      return reply.code(400).send({
+        error: 'Invalid file type. Allowed: PDF, PNG, JPG, WEBP',
+        code: 'INVALID_FILE_TYPE'
+      });
+    }
+
+    try {
+      const uploadDir = path.join(process.cwd(), 'public/uploads');
+      await fs.mkdir(uploadDir, { recursive: true });
+
+      const extByMime: Record<string, string> = {
+        'application/pdf': 'pdf',
+        'image/png': 'png',
+        'image/jpeg': 'jpg',
+        'image/webp': 'webp',
+      };
+      const ext = extByMime[mimeType] || 'bin';
+      const fileName = `ticket-template-${id}-${Date.now()}.${ext}`;
+      const filePath = path.join(uploadDir, fileName);
+      const buffer = await data.toBuffer();
+
+      await fs.writeFile(filePath, buffer);
+      return { url: `/public/uploads/${fileName}` };
+    } catch (err: any) {
+      console.error('[TICKET_TEMPLATE_UPLOAD_ERROR]', err);
+      return reply.code(500).send({ error: 'Failed to upload template', code: 'UPLOAD_ERROR' });
+    }
+  });
+
   // PATCH /events/:id/lineup/reorder
   fastify.patch('/:id/lineup/reorder', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
@@ -880,7 +1482,7 @@ export async function eventRoutes(fastify: FastifyInstance) {
   fastify.get('/:slugOrId/rundown', async (req: FastifyRequest, reply: FastifyReply) => {
     const { slugOrId } = req.params as any;
     const event = await (prisma as any).event.findFirst({
-      where: { OR: [{ slug: slugOrId }, { id: slugOrId }] },
+      where: { status: 'PUBLISHED', OR: [{ slug: slugOrId }, { id: slugOrId }] },
       select: { id: true },
     });
     if (!event) {
@@ -1000,6 +1602,17 @@ export async function eventRoutes(fastify: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     }
 
+    for (const cat of categories) {
+      const parsed = ticketCategorySchema.safeParse(cat);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          error: 'Validation failed',
+          code: 'VALIDATION_ERROR',
+          details: parsed.error.flatten(),
+        });
+      }
+    }
+
     const result = await Promise.all(categories.map(async (cat, index) => {
       const baseData = {
         name: cat.name,
@@ -1019,7 +1632,7 @@ export async function eventRoutes(fastify: FastifyInstance) {
 
       if (cat.id && !String(cat.id).startsWith('temp-')) {
         // Protected: preserve sold count on update
-        const existing = await (prisma as any).ticketCategory.findUnique({ where: { id: cat.id } });
+        const existing = await (prisma as any).ticketCategory.findFirst({ where: { id: cat.id, eventId: id } });
         if (!existing) return reply.code(404).send({ error: `Category ${cat.id} not found`, code: 'CATEGORY_NOT_FOUND' });
         // Prevent reducing quota below sold
         if (baseData.quota < existing.sold) {
@@ -1046,7 +1659,14 @@ export async function eventRoutes(fastify: FastifyInstance) {
 
   fastify.post('/:id/ticket-categories', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
+    const user = req.user as any;
+    if (!['EO_ADMIN', 'SUPER_ADMIN'].includes(user.role)) {
+      return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
     const data = ticketCategorySchema.parse(req.body);
+    const managed = await resolveManagedEvent(id, user);
+    if (!managed.event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
 
     const categories = await (prisma as any).ticketCategory.findMany({ where: { eventId: id } });
     const orderIndex = categories.length + 1;
@@ -1073,36 +1693,55 @@ export async function eventRoutes(fastify: FastifyInstance) {
     return reply.code(201).send(category);
   });
 
-  // GET /events/:slugOrId/tickets (public — internal tickets hidden)
-  fastify.get('/:slugOrId/tickets', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { slugOrId } = req.params as any;
-    const event = await (prisma as any).event.findFirst({
-      where: { OR: [{ slug: slugOrId }, { id: slugOrId }] },
-      select: {
-        id: true,
-        categories: {
-          where: { isInternal: false },
-          orderBy: { orderIndex: 'asc' },
-        },
-      },
-    });
-    if (!event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+   // GET /events/:slugOrId/tickets (public — internal tickets hidden)
+   fastify.get('/:slugOrId/tickets', async (req: FastifyRequest, reply: FastifyReply) => {
+     const { slugOrId } = req.params as any;
+     const event = await (prisma as any).event.findFirst({
+       where: { status: 'PUBLISHED', OR: [{ slug: slugOrId }, { id: slugOrId }] },
+       select: {
+         id: true,
+         categories: {
+           where: { isInternal: false },
+           orderBy: { orderIndex: 'asc' },
+         },
+       },
+     });
+      if (!event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
 
-    const now = new Date();
-    const enriched = event.categories.map((cat: any) => {
-      let status = 'AVAILABLE';
-      if (cat.saleStartAt && now < new Date(cat.saleStartAt)) status = 'UPCOMING';
-      else if (cat.saleEndAt && now > new Date(cat.saleEndAt)) status = 'CLOSED';
-      else if (cat.sold >= cat.quota) status = 'SOLD_OUT';
-      return { ...cat, status };
-    });
+      const now = new Date();
+      const enriched = event.categories.map((cat: any) => {
+        let status = 'ACTIVE';
+        if (cat.saleStartAt && now < new Date(cat.saleStartAt)) status = 'UPCOMING';
+        else if (cat.saleEndAt && now > new Date(cat.saleEndAt)) status = 'CLOSED';
+        else if (cat.sold >= cat.quota) status = 'SOLD_OUT';
+        return {
+          id: cat.id,
+          name: cat.name,
+          description: cat.description,
+          price: cat.price,
+          quota: cat.quota,
+          sold: cat.sold,
+          saleStartAt: cat.saleStartAt,
+          saleEndAt: cat.saleEndAt,
+          maxPerOrder: cat.maxPerOrder,
+          maxPerAccount: cat.maxPerAccount,
+          templateType: cat.templateType,
+          isInternal: cat.isInternal,
+          colorHex: cat.colorHex,
+          orderIndex: cat.orderIndex,
+          status,
+        };
+      });
 
-    return { data: enriched };
-  });
+      return { data: enriched };
+    });
 
   fastify.patch('/:id/ticket-categories/:categoryId', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id, categoryId } = req.params as any;
     const user = req.user as any;
+    if (!['EO_ADMIN', 'SUPER_ADMIN'].includes(user.role)) {
+      return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
     const body = req.body as any;
 
     const event = await (prisma as any).event.findUnique({ where: { id } });
@@ -1113,7 +1752,7 @@ export async function eventRoutes(fastify: FastifyInstance) {
       return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     }
 
-    const existing = await (prisma as any).ticketCategory.findUnique({ where: { id: categoryId } });
+    const existing = await (prisma as any).ticketCategory.findFirst({ where: { id: categoryId, eventId: id } });
     if (!existing) return reply.code(404).send({ error: 'Category not found', code: 'CATEGORY_NOT_FOUND' });
 
     // Protected fields
@@ -1138,15 +1777,26 @@ export async function eventRoutes(fastify: FastifyInstance) {
     if (body.maxPerAccount !== undefined) updateData.maxPerAccount = Number(body.maxPerAccount);
     if (body.isInternal !== undefined) updateData.isInternal = body.isInternal;
 
-    const category = await (prisma as any).ticketCategory.update({
-      where: { id: categoryId },
+    const updated = await (prisma as any).ticketCategory.updateMany({
+      where: { id: categoryId, eventId: id },
       data: updateData,
     });
+    if (updated.count !== 1) {
+      return reply.code(404).send({ error: 'Category not found', code: 'CATEGORY_NOT_FOUND' });
+    }
+    const category = await (prisma as any).ticketCategory.findUnique({ where: { id: categoryId } });
     return { data: category };
   });
 
   fastify.delete('/:id/ticket-categories/:categoryId', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id, categoryId } = req.params as any;
+    const user = req.user as any;
+    if (!['EO_ADMIN', 'SUPER_ADMIN'].includes(user.role)) {
+      return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
+    const managed = await resolveManagedEvent(id, user);
+    if (!managed.event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     
     const category = await (prisma as any).ticketCategory.findUnique({
       where: { id: categoryId },
@@ -1156,14 +1806,21 @@ export async function eventRoutes(fastify: FastifyInstance) {
       return reply.code(400).send({ error: 'Cannot delete category with sold tickets', code: 'TICKETS_SOLD' });
     }
     
-    await (prisma as any).ticketCategory.delete({ where: { id: categoryId, eventId: id } });
+    const deleted = await (prisma as any).ticketCategory.deleteMany({ where: { id: categoryId, eventId: id } });
+    if (deleted.count !== 1) {
+      return reply.code(404).send({ error: 'Category not found', code: 'CATEGORY_NOT_FOUND' });
+    }
     return { success: true };
   });
 
   // ========== LEGACY ROUTES (backward compatibility) ==========
   fastify.post('/:id/categories', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
+    const user = req.user as any;
     const { name, price, quota, description } = req.body as any;
+    const managed = await resolveManagedEvent(id, user);
+    if (!managed.event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     
     const category = await (prisma as any).ticketCategory.create({
       data: { name, price, quota, description, eventId: id },
@@ -1176,34 +1833,46 @@ export async function eventRoutes(fastify: FastifyInstance) {
    fastify.get('/:id/ticket-categories', async (req: FastifyRequest, reply: FastifyReply) => {
      const { id } = req.params as any;
      const event = await (prisma as any).event.findFirst({
-       where: { OR: [{ slug: id }, { id }] },
+       where: { status: 'PUBLISHED', OR: [{ slug: id }, { id }] },
      });
      if (!event) return reply.code(404).send({ error: 'Event not found' });
 
      const categories = await (prisma as any).ticketCategory.findMany({
-       where: { eventId: event.id },
-       select: {
-         id: true,
-         name: true,
-         price: true,
-         quota: true,
-         sold: true,
-         maxPerOrder: true,
-         saleStartAt: true,
-         saleEndAt: true,
-       },
-     });
+       where: { eventId: event.id, isInternal: false },
+        select: {
+          id: true,
+          name: true,
+          price: true,
+          quota: true,
+          sold: true,
+          status: true,
+          maxPerOrder: true,
+          saleStartAt: true,
+          saleEndAt: true,
+        },
+      });
 
      const now = new Date();
      return categories.map((cat: any) => {
        const available = cat.quota - cat.sold;
+       const dbStatus = String(cat.status || '').toUpperCase();
        let status = 'AVAILABLE';
-       if (cat.saleStartAt && new Date(cat.saleStartAt) > now) {
+
+       // Prioritize terminal statuses from DB first.
+       if (dbStatus === 'CLOSED') {
+         status = 'CLOSED';
+       } else if (dbStatus === 'SOLD_OUT') {
+         status = 'SOLD_OUT';
+       } else if (cat.saleStartAt && new Date(cat.saleStartAt) > now) {
          status = 'UPCOMING';
        } else if (cat.saleEndAt && new Date(cat.saleEndAt) < now) {
          status = 'CLOSED';
        } else if (available <= 0) {
          status = 'SOLD_OUT';
+       } else if (dbStatus === 'DRAFT') {
+         // Legacy data may still be DRAFT even after publish; once sale window opens,
+         // treat as available so checkout follows saleStartAt/saleEndAt.
+         status = 'AVAILABLE';
        }
        return {
          id: cat.id,
@@ -1212,6 +1881,7 @@ export async function eventRoutes(fastify: FastifyInstance) {
          available,
          maxPerOrder: cat.maxPerOrder,
          status,
+          saleStartAt: cat.saleStartAt,
        };
      });
    });
@@ -1219,7 +1889,11 @@ export async function eventRoutes(fastify: FastifyInstance) {
   // ========== GENRES & TAGS ==========
   fastify.post('/:id/genres', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
+    const user = req.user as any;
     const { genres } = req.body as { genres: string[] };
+    const managed = await resolveManagedEvent(id, user);
+    if (!managed.event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     
     await (prisma as any).eventGenre.deleteMany({ where: { eventId: id } });
     
@@ -1232,7 +1906,11 @@ export async function eventRoutes(fastify: FastifyInstance) {
 
   fastify.post('/:id/tags', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
+    const user = req.user as any;
     const { tags } = req.body as { tags: string[] };
+    const managed = await resolveManagedEvent(id, user);
+    if (!managed.event) return reply.code(404).send({ error: 'Event not found', code: 'EVENT_NOT_FOUND' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     
     await (prisma as any).eventTag.deleteMany({ where: { eventId: id } });
     
@@ -1248,9 +1926,10 @@ export async function eventRoutes(fastify: FastifyInstance) {
     const { id } = req.params as any;
     const user = req.user as any;
 
-    const event = await (prisma as any).event.findUnique({ where: { id } });
+    const managed = await resolveManagedEvent(id, user);
+    const event = managed.event;
     if (!event) return reply.code(404).send({ error: 'Event not found' });
-    if (event.eoId !== user.id && user.role !== 'SUPER_ADMIN') {
+    if (!managed.authorized) {
       return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     }
     if (event.status !== 'DRAFT') {
@@ -1284,16 +1963,42 @@ export async function eventRoutes(fastify: FastifyInstance) {
       data: { status: 'REVIEW' },
     });
 
+    const actor = req.user as any;
+    await (prisma as any).eventComment.create({
+      data: {
+        eventId: id,
+        authorId: actor.id,
+        authorRole: actor.role,
+        message: 'Event diajukan untuk review. Mohon persetujuan admin.',
+      },
+    }).catch(() => null);
+
+    const admins = await (prisma as any).user.findMany({
+      where: { role: 'SUPER_ADMIN', status: 'ACTIVE' },
+      select: { id: true },
+    });
+    await createNotifications(admins.map((a: any) => a.id), {
+      type: 'EVENT_SUBMITTED_REVIEW',
+      title: `Event diajukan: ${event.title || id}`,
+      body: 'EO mengajukan event untuk review dan persetujuan.',
+      data: { eventId: id },
+    });
+
     return { status: 'REVIEW', message: 'Event submitted for review' };
   });
 
   fastify.post('/:id/cancel', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     const user = req.user as any;
+    if (!['EO_ADMIN', 'SUPER_ADMIN'].includes(user.role)) {
+      return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
     const { reason } = req.body as { reason?: string };
 
-    const event = await (prisma as any).event.findUnique({ where: { id } });
+    const managed = await resolveManagedEvent(id, user);
+    const event = managed.event;
     if (!event) return reply.code(404).send({ error: 'Event not found' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     if (event.status === 'COMPLETED' || event.status === 'ARCHIVED') {
       return reply.code(400).send({ error: 'Cannot cancel this event', code: 'INVALID_STATUS' });
     }
@@ -1307,6 +2012,7 @@ export async function eventRoutes(fastify: FastifyInstance) {
       where: { eventId: id },
       data: { status: 'CLOSED' },
     });
+    await logSuperAdminAction(user, 'EVENT_CANCELLED_BY_SUPER_ADMIN', id, req.ip, { reason: reason || null });
 
     return { success: true, message: 'Event cancelled' };
   });
@@ -1314,14 +2020,20 @@ export async function eventRoutes(fastify: FastifyInstance) {
   fastify.post('/:id/archive', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     const user = req.user as any;
+    if (!['EO_ADMIN', 'SUPER_ADMIN'].includes(user.role)) {
+      return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
 
-    const event = await (prisma as any).event.findUnique({ where: { id } });
+    const managed = await resolveManagedEvent(id, user);
+    const event = managed.event;
     if (!event) return reply.code(404).send({ error: 'Event not found' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
 
     await (prisma as any).event.update({
       where: { id },
       data: { status: 'ARCHIVED' },
     });
+    await logSuperAdminAction(user, 'EVENT_ARCHIVED_BY_SUPER_ADMIN', id, req.ip);
 
     return { success: true, message: 'Event archived' };
   });
@@ -1329,27 +2041,59 @@ export async function eventRoutes(fastify: FastifyInstance) {
   fastify.post('/:id/publish', { preHandler: [authenticate] }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     const user = req.user as any;
-
-    const event = await (prisma as any).event.findUnique({ where: { id } });
+    if (!['EO_ADMIN', 'SUPER_ADMIN'].includes(user.role)) {
+      return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
+    }
+    const managed = await resolveManagedEvent(id, user);
+    const event = managed.event;
     if (!event) return reply.code(404).send({ error: 'Event not found' });
+    if (!managed.authorized) return reply.code(403).send({ error: 'Forbidden', code: 'FORBIDDEN' });
     if (event.status !== 'REVIEW' && user.role !== 'SUPER_ADMIN') {
       return reply.code(400).send({ error: 'Event must be in REVIEW status', code: 'INVALID_STATUS' });
     }
+    if (!event.title || !event.description || String(event.description).trim().length === 0) {
+      return reply.code(400).send({ error: 'Validation failed', code: 'VALIDATION_ERROR', details: ['Title and description are required'] });
+    }
+    if (new Date(event.endDate) <= new Date(event.startDate)) {
+      return reply.code(400).send({ error: 'Validation failed', code: 'VALIDATION_ERROR', details: ['Invalid date range'] });
+    }
 
-    const categories = await (prisma as any).ticketCategory.findMany({ where: { eventId: id } });
+    const [venue, categories] = await Promise.all([
+      (prisma as any).eventVenue.findUnique({ where: { eventId: id }, select: { id: true } }),
+      (prisma as any).ticketCategory.findMany({ where: { eventId: id }, select: { id: true, quota: true, isInternal: true } }),
+    ]);
+
+    const publishErrors: string[] = [];
+    if (!venue) publishErrors.push('Venue is required');
+    if (categories.length === 0) publishErrors.push('At least 1 ticket category is required');
+    if (!categories.some((c: any) => !c.isInternal && c.quota > 0)) publishErrors.push('At least 1 public ticket with stock > 0 is required');
+    if (publishErrors.length > 0) {
+      return reply.code(400).send({ error: 'Validation failed', code: 'VALIDATION_ERROR', details: publishErrors });
+    }
+
+    const publishResult = await (prisma as any).$transaction(async (tx: any) => {
+      const updatedEvent = await tx.event.updateMany({
+        where: { id, status: 'REVIEW' },
+        data: { status: 'PUBLISHED', publishedAt: new Date() },
+      });
+      if (!updatedEvent || updatedEvent.count !== 1) {
+        return { updated: false };
+      }
+      await tx.ticketCategory.updateMany({
+        where: { eventId: id },
+        data: { status: 'ACTIVE' },
+      });
+      return { updated: true };
+    });
+
+    if (!publishResult.updated) {
+      return reply.code(400).send({ error: 'Event must be in REVIEW status', code: 'INVALID_STATUS' });
+    }
+
     for (const cat of categories) {
       await initStock(id, cat.id, cat.quota);
     }
-
-    await (prisma as any).event.update({
-      where: { id },
-      data: { status: 'PUBLISHED', publishedAt: new Date() },
-    });
-
-    await (prisma as any).ticketCategory.updateMany({
-      where: { eventId: id },
-      data: { status: 'ACTIVE' },
-    });
+    await logSuperAdminAction(user, 'EVENT_PUBLISHED_BY_SUPER_ADMIN', id, req.ip, { categoryCount: categories.length });
 
     return { success: true, status: 'PUBLISHED' };
   });
@@ -1358,7 +2102,7 @@ export async function eventRoutes(fastify: FastifyInstance) {
      const { slugOrId } = req.params as any;
      
      const event = await (prisma as any).event.findFirst({
-       where: { OR: [{ slug: slugOrId }, { id: slugOrId }] },
+       where: { status: 'PUBLISHED', OR: [{ slug: slugOrId }, { id: slugOrId }] },
        select: { 
          id: true,
          status: true,

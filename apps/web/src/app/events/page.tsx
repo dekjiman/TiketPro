@@ -6,26 +6,14 @@ import { EventList, EventListError } from '@/components/events';
 import { useEventList } from '@/hooks/useEvent';
 import Footer from '@/components/Footer';
 import { PublicNavbar } from '@/components/PublicNavbar';
-import type { EventStatus } from '@/types/event';
-
-const STATUS_TABS: { label: string; value?: EventStatus }[] = [
-  { label: 'All', value: undefined },
-  { label: 'Published', value: 'PUBLISHED' },
-  { label: 'Draft', value: 'DRAFT' },
-  { label: 'Review', value: 'REVIEW' },
-  { label: 'Completed', value: 'COMPLETED' },
-];
 
 export default function EventsPage() {
   const searchParams = useSearchParams();
-  const [status, setStatus] = useState<EventStatus | undefined>(
-    (searchParams.get('status') as EventStatus) || undefined
-  );
   const [search, setSearch] = useState(searchParams.get('search') || '');
   const [page, setPage] = useState(Number(searchParams.get('page')) || 1);
 
   const { data, isLoading, error, refetch } = useEventList({
-    status,
+    status: 'PUBLISHED',
     search: search || undefined,
     page,
     limit: 12,
@@ -57,21 +45,6 @@ export default function EventsPage() {
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-900 dark:text-white placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
               />
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {STATUS_TABS.map((tab) => (
-                <button
-                  key={tab.label}
-                  onClick={() => setStatus(tab.value)}
-                  className={`px-4 py-2 text-sm rounded-lg transition-colors ${
-                    status === tab.value
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
             </div>
           </div>
         </div>

@@ -5,7 +5,7 @@ import { jwtVerify } from 'jose';
 const ROLE_DASHBOARD: Record<string, string> = {
   SUPER_ADMIN: '/admin',
   EO_ADMIN: '/eo',
-  EO_STAFF: '/eo',
+  EO_STAFF: '/eo/checkin',
   AFFILIATE: '/affiliate',
   RESELLER: '/reseller',
   CUSTOMER: '/dashboard',
@@ -24,9 +24,12 @@ const PUBLIC_ROUTES = [
   '/events',
 ];
 
+const PROTECTED_PREFIXES = ['/dashboard', '/profile', '/admin', '/eo', '/affiliate', '/reseller'];
+
 const WHITELIST = [
   '/_next',
   '/favicon.ico',
+  '/api',
   '/api/auth',
   '/api/events',
   '/public',
@@ -38,85 +41,106 @@ const isWhitelisted = (pathname: string) => {
 };
 
 const getToken = (req: NextRequest) => {
-  return req.cookies.get('token')?.value || req.headers.get('authorization')?.replace('Bearer ', '');
+  return req.cookies.get('access_token')?.value || req.headers.get('authorization')?.replace('Bearer ', '');
 };
 
-const getJwtSecret = () => {
-  return process.env.JWT_SECRET || 'cd3d919b489f39a76917EME9M9cSy9FvfHvcx2gMPkp1H5Dj4YaKufPRsAyon8Tf';
-};
-
-const getUserFromCookie = (req: NextRequest) => {
+const getUserRoleFromCookie = (req: NextRequest): string | null => {
+  const raw = req.cookies.get('user')?.value;
+  if (!raw) return null;
   try {
-    const userCookie = req.cookies.get('user')?.value;
-    if (!userCookie) return null;
-    return JSON.parse(decodeURIComponent(userCookie));
+    const parsed = JSON.parse(decodeURIComponent(raw)) as { role?: string };
+    return parsed.role || null;
   } catch {
     return null;
   }
 };
 
+const getJwtSecret = () => {
+  return process.env.JWT_SECRET;
+};
+
+const isAuthorizedPath = (role: string, pathname: string) => {
+  if (pathname.startsWith('/admin')) return role === 'SUPER_ADMIN';
+  if (pathname.startsWith('/eo')) return role === 'EO_ADMIN' || role === 'EO_STAFF' || role === 'SUPER_ADMIN';
+  if (pathname.startsWith('/affiliate')) return role === 'AFFILIATE';
+  if (pathname.startsWith('/reseller')) return role === 'RESELLER';
+  if (pathname.startsWith('/dashboard')) return !!role;
+  if (pathname.startsWith('/profile')) return !!role;
+  return true;
+};
+
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  const userRole = getUserRoleFromCookie(req);
+  const token = getToken(req);
 
   if (isWhitelisted(pathname)) {
     return NextResponse.next();
+  }
+
+  if ((pathname === '/login' || pathname === '/register') && token && userRole && ROLE_DASHBOARD[userRole]) {
+    return NextResponse.redirect(new URL(ROLE_DASHBOARD[userRole], req.url));
   }
 
   if (PUBLIC_ROUTES.includes(pathname)) {
     return NextResponse.next();
   }
 
-  const token = getToken(req);
-
-  if (!token) {
+  if (!token && !userRole) {
     const loginUrl = new URL('/login', req.url);
     loginUrl.searchParams.set('redirect', pathname);
     return NextResponse.redirect(loginUrl);
   }
 
+  if (!token && userRole) {
+    // Never trust the client-managed "user" cookie for protected routes.
+    if (PROTECTED_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+      const loginUrl = new URL('/login', req.url);
+      loginUrl.searchParams.set('redirect', pathname);
+      return NextResponse.redirect(loginUrl);
+    }
+    return NextResponse.next();
+  }
+
   try {
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(getJwtSecret()));
+    const secret = getJwtSecret();
+    if (!secret) {
+      if (userRole) {
+        if (!isAuthorizedPath(userRole, pathname)) {
+          return NextResponse.redirect(new URL(ROLE_DASHBOARD[userRole] || '/dashboard', req.url));
+        }
+        return NextResponse.next();
+      }
+      return NextResponse.next();
+    }
+
+    const { payload } = await jwtVerify(token, new TextEncoder().encode(secret));
     const role = payload.role as string;
-    const user = getUserFromCookie(req);
+    if (!role || !ROLE_DASHBOARD[role]) throw new Error('Invalid token role');
 
-    if (user?.status === 'PENDING_APPROVAL' && pathname !== '/auth/pending-approval') {
-      return NextResponse.redirect(new URL('/auth/pending-approval', req.url));
+    if (pathname === '/login' || pathname === '/register') {
+      return NextResponse.redirect(new URL(ROLE_DASHBOARD[role], req.url));
     }
 
-    if (user?.status === 'SUSPENDED' && pathname !== '/auth/suspended') {
-      return NextResponse.redirect(new URL('/auth/suspended', req.url));
-    }
-
-    if (user?.status === 'BANNED' && pathname !== '/auth/suspended') {
-      return NextResponse.redirect(new URL('/auth/suspended', req.url));
-    }
-
-    if (role === 'SUPER_ADMIN') {
-      if (pathname.startsWith('/admin')) {
-        return NextResponse.next();
-      }
-      return NextResponse.next();
-    }
-
-    if (role && ROLE_DASHBOARD[role]) {
-      const targetDashboard = ROLE_DASHBOARD[role];
-      // Only redirect if user is on /login or /register (should go to dashboard after auth)
-      // Or if user explicitly visits /dashboard (redirect to role-specific dashboard)
-      if (pathname === '/dashboard' || pathname.startsWith(targetDashboard)) {
-        return NextResponse.next();
-      }
-      // If trying to access login/register while logged in, redirect to dashboard
-      if (pathname === '/login' || pathname === '/register') {
-        return NextResponse.redirect(new URL(targetDashboard, req.url));
-      }
-      // Allow all other routes (events, checkout, etc.)
-      return NextResponse.next();
+    if (!isAuthorizedPath(role, pathname)) {
+      return NextResponse.redirect(new URL(ROLE_DASHBOARD[role], req.url));
     }
 
     return NextResponse.next();
   } catch {
+    if (userRole && ROLE_DASHBOARD[userRole]) {
+      if (!isAuthorizedPath(userRole, pathname)) {
+        return NextResponse.redirect(new URL(ROLE_DASHBOARD[userRole], req.url));
+      }
+      return NextResponse.next();
+    }
+    if (pathname === '/login' || pathname === '/register') {
+      return NextResponse.next();
+    }
     const loginUrl = new URL('/login', req.url);
-    loginUrl.searchParams.set('redirect', pathname);
+    if (pathname !== '/login') {
+      loginUrl.searchParams.set('redirect', pathname);
+    }
     return NextResponse.redirect(loginUrl);
   }
 }

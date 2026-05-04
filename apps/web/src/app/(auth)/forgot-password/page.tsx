@@ -46,7 +46,7 @@ export default function ForgotPasswordPage() {
         <div className="p-4 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg text-emerald-600 dark:text-emerald-400 text-sm mb-6">
           Silakan check inbox atau folder spam Anda untuk link reset password. Link berlaku 1 jam.
         </div>
-        <Link href="/login" className="block text-center text-sm font-semibold text-[#065F46] hover:underline">
+        <Link href="/login" className="block text-center text-sm font-semibold text-emerald-700 dark:text-emerald-400 hover:underline">
           Kembali ke login
         </Link>
       </div>
@@ -59,7 +59,7 @@ export default function ForgotPasswordPage() {
         Lupa Password
       </h1>
       <p className="text-slate-600 dark:text-slate-400 mb-8" style={{ fontFamily: 'Inter' }}>
-        Masukkan email Anda untuk receiving link reset password
+        Masukkan email Anda untuk menerima link reset password
       </p>
 
       {error && (
@@ -85,7 +85,7 @@ export default function ForgotPasswordPage() {
 
         <p className="text-center text-sm text-slate-600 dark:text-slate-300">
           Ingat password?{' '}
-          <Link href="/login" className="font-semibold text-[#065F46] hover:underline">
+          <Link href="/login" className="font-semibold text-emerald-700 dark:text-emerald-400 hover:underline">
             Masuk
           </Link>
         </p>

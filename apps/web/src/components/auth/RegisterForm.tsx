@@ -4,8 +4,8 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button, Input } from '@/components/ui';
-import { authApi } from '@/lib/auth';
-import type { User } from '@/lib/auth';
+import { authApi } from '@/lib/api';
+import type { User } from '@/store/authStore';
 import { validateEmail, validatePassword, validateName, validatePhone, validateConfirmPassword, getPasswordStrength } from '@/lib/validation';
 
 interface RegisterFormProps {
@@ -57,14 +57,13 @@ export function RegisterForm({ onSuccess, defaultRole = 'CUSTOMER' }: RegisterFo
     setLoading(true);
 
     try {
-      const res = await authApi.register({ name, email, password, phone, role, referralCode: referralCode || undefined });
-      
-      if (res.requiresVerification) {
+      const res = await authApi.register({ name, email, password, phone, role });
+
+      if (res.data.requiresVerification) {
         router.push(`/verify-email?email=${encodeURIComponent(email)}`);
       } else {
-        localStorage.setItem('token', res.accessToken);
-        localStorage.setItem('user', JSON.stringify(res.user));
-        onSuccess?.(res.user);
+        localStorage.setItem('user', JSON.stringify(res.data.user));
+        onSuccess?.(res.data.user);
         router.push('/dashboard');
       }
     } catch (err: any) {
@@ -187,13 +186,13 @@ export function RegisterForm({ onSuccess, defaultRole = 'CUSTOMER' }: RegisterFo
           type="checkbox"
           checked={agreeTerms}
           onChange={(e) => setAgreeTerms(e.target.checked)}
-          className="mt-1 w-4 h-4 rounded border-slate-300 text-[#065F46] focus:ring-[#065F46]"
+          className="mt-1 w-4 h-4 rounded border-slate-300 text-emerald-700 dark:text-emerald-400 focus:ring-emerald-600"
         />
         <label className="text-sm text-slate-600 dark:text-slate-300">
           Saya setuju dengan{' '}
-          <Link href="/terms" className="text-[#065F46] hover:underline">Syarat & Ketentuan</Link>
+          <Link href="/terms" className="text-emerald-700 dark:text-emerald-400 hover:underline">Syarat & Ketentuan</Link>
           {' '}dan{' '}
-          <Link href="/privacy" className="text-[#065F46] hover:underline">Kebijakan Privasi</Link>
+          <Link href="/privacy" className="text-emerald-700 dark:text-emerald-400 hover:underline">Kebijakan Privasi</Link>
         </label>
       </div>
       {errors.terms && <p className="text-sm text-red-500">{errors.terms}</p>}
@@ -204,7 +203,7 @@ export function RegisterForm({ onSuccess, defaultRole = 'CUSTOMER' }: RegisterFo
 
       <p className="text-center text-sm text-slate-600 dark:text-slate-300">
         Sudah punya akun?{' '}
-        <Link href="/login" className="font-semibold text-[#065F46] hover:underline">
+        <Link href="/login" className="font-semibold text-emerald-700 dark:text-emerald-400 hover:underline">
           Masuk
         </Link>
       </p>

@@ -56,7 +56,7 @@ export default function EOEventDetailPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (user && user.role !== 'EO_ADMIN' && user.role !== 'EO_STAFF') {
+    if (user && user.role !== 'EO_ADMIN') {
       toast.showToast('error', 'Access denied');
       router.push('/dashboard');
     }
@@ -67,7 +67,7 @@ export default function EOEventDetailPage() {
     setError('');
     try {
       const [eventRes, summaryRes] = await Promise.all([
-        api.get(`/api/events/${id}`),
+        api.get(`/api/events/${id}/full`),
         api.get(`/api/eo/events/${id}/dashboard/summary`),
       ]);
       setEvent(eventRes.data?.data || eventRes.data);
@@ -80,15 +80,15 @@ export default function EOEventDetailPage() {
   };
 
   useEffect(() => {
-    if (id && id !== 'create' && (user?.role === 'EO_ADMIN' || user?.role === 'EO_STAFF')) {
+    if (id && id !== 'create' && user?.role === 'EO_ADMIN') {
       loadData();
     }
   }, [id, user]);
 
-  if (!user || (user.role !== 'EO_ADMIN' && user.role !== 'EO_STAFF')) {
+  if (!user || user.role !== 'EO_ADMIN') {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+        <div className="w-8 h-8 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -96,7 +96,7 @@ export default function EOEventDetailPage() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-[#065F46] border-t-transparent rounded-full animate-spin" />
+        <div className="w-8 h-8 border-2 border-emerald-700 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }

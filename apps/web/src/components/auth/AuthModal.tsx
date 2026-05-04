@@ -56,7 +56,7 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
                 onClick={() => setTab('login')}
                 className={`px-6 py-2 rounded-md text-sm font-medium transition ${
                   tab === 'login'
-                    ? 'bg-white dark:bg-slate-600 text-[#065F46] shadow-sm'
+                    ? 'bg-white dark:bg-slate-600 text-emerald-700 dark:text-emerald-400 shadow-sm'
                     : 'text-slate-600 dark:text-slate-300'
                 }`}
               >
@@ -66,7 +66,7 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
                 onClick={() => setTab('register')}
                 className={`px-6 py-2 rounded-md text-sm font-medium transition ${
                   tab === 'register'
-                    ? 'bg-white dark:bg-slate-600 text-[#065F46] shadow-sm'
+                    ? 'bg-white dark:bg-slate-600 text-emerald-700 dark:text-emerald-400 shadow-sm'
                     : 'text-slate-600 dark:text-slate-300'
                 }`}
               >

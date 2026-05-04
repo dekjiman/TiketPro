@@ -69,7 +69,7 @@ enum OrderStatus {
 enum TicketStatus {
   PENDING
   ACTIVE
-  USED
+  CHECKIN
   REFUNDED
   CANCELLED
   TRANSFERRED
@@ -113,6 +113,8 @@ model User {
   gameProfile    UserGameProfile?
   lotteryEntries LotteryEntry[]
   eoInvites      StaffInvite[]         @relation("StaffInviteInviter")
+  eventComments  EventComment[]
+  notifications  Notification[]
 
   @@unique([provider, providerId])
   @@index([emailNormalized])
@@ -221,8 +223,116 @@ model Event {
   checkInPoints CheckInPoint[]
   genres        EventGenre[]
   tags          EventTag[]
+  images        EventImage[]
   gates         Gate[]
   lotteryEvents LotteryEvent[]
+  lotteryConfig LotteryConfig?
+  prizes        Prize[]
+  lotteryPrizeWinners LotteryPrizeWinner[]
+  comments      EventComment[]
+}
+
+enum LotteryDrawMode {
+  BATCH
+  LIVE
+}
+
+enum LotteryEligibleStatus {
+  CHECKED_IN
+}
+
+model LotteryConfig {
+  id                 String                @id @default(cuid())
+  eventId            String                @unique
+  isEnabled          Boolean               @default(false)
+  drawMode           LotteryDrawMode       @default(LIVE)
+  allowMultipleWin   Boolean               @default(false)
+  eligibleStatus     LotteryEligibleStatus @default(CHECKED_IN)
+  maxWinnerPerTicket Int                   @default(1)
+  cooldownSeconds    Int                   @default(3)
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+}
+
+model Prize {
+  id              String   @id @default(cuid())
+  eventId         String
+  name            String
+  description     String?  @db.Text
+  imageUrl        String?
+  totalWinner     Int
+  remainingWinner Int
+  order           Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  winners LotteryPrizeWinner[]
+
+  @@unique([eventId, order])
+  @@index([eventId, remainingWinner])
+}
+
+model LotteryPrizeWinner {
+  id          String   @id @default(cuid())
+  eventId     String
+  prizeId     String
+  ticketId    String
+  ticketCode  String
+  userName    String
+  confirmedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  prize  Prize  @relation(fields: [prizeId], references: [id], onDelete: Cascade)
+  event  Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, ticketId])
+  @@index([eventId, prizeId, confirmedAt])
+}
+
+model EventComment {
+  id         String   @id @default(cuid())
+  eventId     String
+  authorId    String
+  authorRole  String
+  message     String   @db.Text
+  createdAt   DateTime @default(now())
+
+  event   Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  author  User  @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, createdAt])
+  @@index([authorId, createdAt])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  body      String
+  data      Json?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+}
+
+model EventImage {
+  id         String   @id @default(cuid())
+  eventId    String
+  imageUrl   String
+  orderIndex Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, orderIndex])
 }
 
 model EventVenue {
@@ -331,11 +441,15 @@ model Order {
   midtransOrderId  String?     @unique
   midtransToken    String?
   paymentMethod    String?
+  buyerName        String?
+  buyerEmail       String?
+  buyerPhone       String?
   paidAt           DateTime?
   expiredAt        DateTime
   fulfilledAt      DateTime?
   isSuspicious     Boolean     @default(false)
   suspiciousReason String?
+  attendees        Json?
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
@@ -344,11 +458,28 @@ model Order {
   items          OrderItem[]
   tickets        Ticket[]
   refundRequests RefundRequest[]
+  statusLogs     OrderStatusAuditLog[]
 
   @@index([userId, status])
   @@index([eventId, status])
   @@index([status, expiredAt])
   @@index([midtransOrderId])
+}
+
+model OrderStatusAuditLog {
+  id          String      @id @default(cuid())
+  orderId      String
+  fromStatus   OrderStatus
+  toStatus     OrderStatus
+  source       String
+  reason       String?
+  payloadJson  String?
+  createdAt    DateTime    @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@index([toStatus, createdAt])
 }
 
 model OrderItem {
@@ -369,6 +500,7 @@ model Ticket {
   categoryId    String
   userId        String
   ticketCode    String       @unique
+  source        String       @default("ORDER") // ORDER | MANUAL
   status        TicketStatus @default(PENDING)
   holderName    String
   holderEmail   String?
@@ -391,6 +523,7 @@ model Ticket {
   user      User             @relation(fields: [userId], references: [id])
   scanLogs  ScanLog[]
   transfers TicketTransfer[]
+  lotteryPrizeWins LotteryPrizeWinner[]
   Event     Event?           @relation(fields: [eventId], references: [id])
   eventId   String?
   RfidCard  RfidCard?
@@ -398,6 +531,7 @@ model Ticket {
   @@index([userId, status])
   @@index([orderId])
   @@index([ticketCode])
+  @@index([source])
   @@index([status, categoryId])
 }
 

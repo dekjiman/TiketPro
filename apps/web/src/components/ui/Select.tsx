@@ -33,11 +33,11 @@ export function SelectTrigger({ className = '', children }: { className?: string
   return (
     <button
       type="button"
-      className={`flex items-center justify-between w-full px-3 py-2 border rounded-md bg-white ${className}`}
+      className={`flex items-center justify-between w-full px-3 py-2 border border-[var(--border)] rounded-md bg-[var(--surface)] text-[var(--text)] focus:outline-none focus:ring-2 focus:ring-emerald-500/40 ${className}`}
       onClick={() => setOpen(!open)}
     >
-      <span className="text-gray-600">{value || 'Pilih...'}</span>
-      <ChevronDown className={`w-4 h-4 transition ${open ? 'rotate-180' : ''}`} />
+      <span className="text-[var(--muted)]">{children || value || 'Pilih...'}</span>
+      <ChevronDown className={`w-4 h-4 text-[var(--muted)] transition ${open ? 'rotate-180' : ''}`} />
     </button>
   );
 }
@@ -53,12 +53,12 @@ export function SelectContent({ children, className = '' }: { children: ReactNod
   if (!open) return null;
   
   return (
-    <div className="absolute top-full left-0 right-0 mt-1 border rounded-md bg-white shadow-lg z-50 overflow-hidden">
+    <div className={`absolute top-full left-0 right-0 mt-1 border border-[var(--border)] rounded-md bg-[var(--surface)] text-[var(--text)] shadow-lg z-50 overflow-hidden ${className}`}>
       {Array.isArray(children) ? (
         children.map((child, i) => (
           <div
             key={i}
-            className="px-3 py-2 hover:bg-gray-100 cursor-pointer flex items-center justify-between"
+            className="px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer flex items-center justify-between"
             onClick={() => {
               setValue((child as any).props?.value || '');
               setOpen(false);
@@ -78,7 +78,7 @@ export function SelectItem({ value, children, className = '' }: { value: string;
   
   return (
     <div
-      className={`px-3 py-2 cursor-pointer flex items-center justify-between ${className}`}
+      className={`px-3 py-2 cursor-pointer flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800 ${className}`}
       onClick={(e) => {
         e.stopPropagation();
         setValue(value);
@@ -86,7 +86,7 @@ export function SelectItem({ value, children, className = '' }: { value: string;
       }}
     >
       {children}
-      {isSelected && <Check className="w-4 h-4" />}
+      {isSelected && <Check className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />}
     </div>
   );
 }

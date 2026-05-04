@@ -3,6 +3,7 @@ import { ThemeProvider } from '@/components/ThemeProvider';
 import { ToastProvider } from '@/components/ui';
 import { QueryProvider } from '@/lib/queryProvider';
 import { AuthChecker } from '@/components/AuthChecker';
+import Script from 'next/script';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
@@ -28,8 +29,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             `,
           }}
         />
+        <Script
+          id="midtrans-snap-script"
+          src={process.env.NEXT_PUBLIC_MIDTRANS_IS_PRODUCTION === 'true'
+            ? 'https://app.midtrans.com/snap/snap.js'
+            : 'https://app.sandbox.midtrans.com/snap/snap.js'}
+          data-client-key={process.env.NEXT_PUBLIC_MIDTRANS_CLIENT_KEY}
+          strategy="afterInteractive"
+        />
       </head>
-      <body className="min-h-screen bg-slate-50 dark:bg-slate-900 antialiased transition-colors">
+      <body className="min-h-screen bg-[var(--bg)] text-[var(--text)] antialiased transition-colors">
         <ThemeProvider>
           <ToastProvider>
             <QueryProvider>
